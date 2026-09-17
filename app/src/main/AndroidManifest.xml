@@ -65,7 +65,13 @@
         <!-- D-VEX Floating Orb WindowManager Overlay Service -->
         <service
             android:name=".overlay.DvexFloatingOrbService"
-            android:exported="false" />
+            android:exported="false"
+            android:foregroundServiceType="microphone" />
+
+        <service
+            android:name=".overlay.DvexFloatingOverlayService"
+            android:exported="false"
+            android:foregroundServiceType="microphone" />
 
         <!-- Optional User-Authorized Hands-Free System Navigation Service -->
         <service

@@ -89,7 +89,7 @@ class AndroidSpeechWakeWordDetector(
     } catch (e: Exception) {
       Log.w(TAG, "Error releasing wake-word recognizer", e)
     }
-    onTriggerCallback?.invoke(keyword)
+    onTriggerCallback?.invoke(phrase)
   }
 
   private fun initAndListen() {
@@ -169,6 +169,7 @@ class AndroidSpeechWakeWordDetector(
 
   private fun matchesWakeWord(phrase: String): Boolean {
     val norm = phrase.lowercase(Locale.ROOT).replace("-", " ").replace(".", " ")
+    val targetKeyword = keyword.lowercase(Locale.ROOT).replace("-", " ").trim()
     return norm.contains("d vex") ||
       norm.contains("dvex") ||
       norm.contains("dee vex") ||
@@ -176,10 +177,19 @@ class AndroidSpeechWakeWordDetector(
       norm.contains("d-vex") ||
       norm.contains("the vex") ||
       norm.contains("t-vex") ||
+      norm.contains("t vex") ||
+      norm.contains("divex") ||
+      norm.contains("divax") ||
+      norm.contains("d fix") ||
+      norm.contains("d fax") ||
+      norm.contains("d box") ||
       norm.contains("hey d vex") ||
       norm.contains("hey dvex") ||
       norm.contains("hey devex") ||
-      norm.contains(keyword.lowercase(Locale.ROOT))
+      norm.contains("டி-வெக்ஸ்") ||
+      norm.contains("டிவெக்ஸ்") ||
+      norm.contains("டீவெக்ஸ்") ||
+      (targetKeyword.isNotEmpty() && norm.contains(targetKeyword))
   }
 
   override fun stop() {

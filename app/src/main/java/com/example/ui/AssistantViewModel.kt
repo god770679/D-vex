@@ -10,6 +10,7 @@ import com.example.model.DvexAssistantState
 import com.example.model.DvexSettings
 import com.example.model.DvexUiState
 import com.example.model.VoiceState
+import com.example.permissions.DvexPermissionManager
 import com.example.repository.AssistantRepository
 import com.example.service.DvexAssistantService
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -46,7 +47,9 @@ class AssistantViewModel(application: Application) : AndroidViewModel(applicatio
           is DvexAssistantState.Error -> "ALERT: ${state.message}"
           is DvexAssistantState.Standby -> response
           is DvexAssistantState.Idle -> response
-          is DvexAssistantState.WakeWordListening -> response
+          is DvexAssistantState.WakeWordListening -> {
+            if (response.isNotBlank() && response != "Standing by.") response else "Listening for \"${assistantRepo.settings.value.wakePhrase}\"..."
+          }
         }
 
         _uiState.value = _uiState.value.copy(
@@ -60,7 +63,7 @@ class AssistantViewModel(application: Application) : AndroidViewModel(applicatio
     viewModelScope.launch {
       assistantRepo.latestResponse.collectLatest { resp ->
         val state = assistantRepo.assistantState.value
-        if (state is DvexAssistantState.Speaking || state is DvexAssistantState.Standby || state is DvexAssistantState.Idle) {
+        if (state is DvexAssistantState.Speaking || state is DvexAssistantState.Standby || state is DvexAssistantState.Idle || state is DvexAssistantState.WakeWordListening) {
           _uiState.value = _uiState.value.copy(responseText = resp)
         }
       }
@@ -87,6 +90,11 @@ class AssistantViewModel(application: Application) : AndroidViewModel(applicatio
       DvexAssistantService.start(context)
     } else {
       DvexAssistantService.stop(context)
+    }
+    if (newSettings.floatingOrbEnabled && DvexPermissionManager.hasOverlayPermission(context)) {
+      com.example.overlay.DvexFloatingOrbService.start(context)
+    } else {
+      com.example.overlay.DvexFloatingOrbService.stop(context)
     }
   }
 
@@ -116,5 +124,13 @@ class AssistantViewModel(application: Application) : AndroidViewModel(applicatio
 
   fun cancelPendingAction() {
     assistantRepo.cancelPendingAction()
+  }
+
+  fun startWakeWordListening() {
+    assistantRepo.startWakeWordListening()
+  }
+
+  fun stopWakeWordListening() {
+    assistantRepo.wakeWordManager.stop()
   }
 }

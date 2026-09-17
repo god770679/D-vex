@@ -69,16 +69,16 @@ class AssistantRepository private constructor(private val context: Context) {
   private var stateWatchdogJob: Job? = null
 
   init {
-    wakeWordManager.setOnTriggerListener { keyword ->
-      Log.i(TAG_WAKE, "Wake word detected: \"$keyword\"")
-      handleWakeWordTriggered()
+    wakeWordManager.setOnTriggerListener { phrase ->
+      Log.i(TAG_WAKE, "Wake word detected: \"$phrase\"")
+      handleWakeWordTriggered(phrase)
     }
   }
 
   private fun loadSettings(): DvexSettings {
     return DvexSettings(
-      alwaysReadyEnabled = prefs.getBoolean("always_ready", false),
-      floatingOrbEnabled = prefs.getBoolean("floating_orb", false),
+      alwaysReadyEnabled = prefs.getBoolean("always_ready", true),
+      floatingOrbEnabled = prefs.getBoolean("floating_orb", true),
       wakeWordEnabled = prefs.getBoolean("wake_word", false),
       wakeWordKeyword = prefs.getString("wake_word_keyword", "D-VEX") ?: "D-VEX",
       wakePhrase = prefs.getString("wake_phrase", "D-VEX") ?: "D-VEX",
@@ -109,8 +109,8 @@ class AssistantRepository private constructor(private val context: Context) {
 
     wakeWordManager.updateKeyword(newSettings.wakePhrase)
 
-    // Coordinate background wake-word listener
-    if (newSettings.wakeWordEnabled && newSettings.alwaysReadyEnabled) {
+    // Coordinate wake-word listener
+    if (newSettings.wakeWordEnabled && DvexPermissionManager.hasAudioPermission(context)) {
       if (_assistantState.value is DvexAssistantState.Idle || _assistantState.value is DvexAssistantState.Standby) {
         startWakeWordListening()
       }
@@ -161,28 +161,86 @@ class AssistantRepository private constructor(private val context: Context) {
     }
   }
 
-  private fun handleWakeWordTriggered() {
+  fun handleWakeWordTriggered(detectedPhrase: String = "D-VEX") {
     scope.launch {
+      Log.i(TAG_WAKE, "Handling wake word activation triggered: \"$detectedPhrase\"")
       // Audio safety: Stop wake word detector before starting command recognition
       wakeWordManager.stop()
       ttsManager.stop()
       triggerTacticalHaptic()
-      _assistantState.value = DvexAssistantState.Listening
+
+      val confirmationText = "Yes Sir"
+      _latestResponse.value = confirmationText
+      _assistantState.value = DvexAssistantState.Speaking(confirmationText)
       _latestTranscript.value = ""
 
-      if (_settings.value.voiceConfirmationEnabled) {
-        Log.i(TAG_TTS, "Prompting user acknowledgment: \"Yes?\"")
-        ttsManager.speak("Yes?") {
-          scope.launch {
-            delay(150)
-            startListeningForCommand()
+      // Check if user already spoke an attached command in the same sentence (e.g. "D-VEX open youtube")
+      val attachedCommand = extractAttachedCommand(detectedPhrase)
+      if (attachedCommand.isNotBlank()) {
+        Log.i(TAG_WAKE, "Detected attached voice command in wake trigger: \"$attachedCommand\"")
+        var actionExecuted = false
+        val executeAttached = {
+          if (!actionExecuted) {
+            actionExecuted = true
+            scope.launch {
+              delay(150)
+              processCommand(attachedCommand)
+            }
           }
         }
+        val timeoutJob = scope.launch {
+          delay(1600)
+          executeAttached()
+        }
+        ttsManager.speak(confirmationText) {
+          timeoutJob.cancel()
+          executeAttached()
+        }
       } else {
-        delay(200)
-        startListeningForCommand()
+        // Standard hands-free flow: Speak spoken confirmation, then automatically start listening for command
+        var commandListeningStarted = false
+        val startCommandListening = {
+          if (!commandListeningStarted) {
+            commandListeningStarted = true
+            scope.launch {
+              delay(150)
+              startListeningForCommand()
+            }
+          }
+        }
+
+        val timeoutJob = scope.launch {
+          delay(1800)
+          startCommandListening()
+        }
+
+        if (_settings.value.voiceConfirmationEnabled) {
+          ttsManager.speak(confirmationText) {
+            timeoutJob.cancel()
+            startCommandListening()
+          }
+        } else {
+          timeoutJob.cancel()
+          startCommandListening()
+        }
       }
     }
+  }
+
+  private fun extractAttachedCommand(rawInput: String): String {
+    val clean = rawInput.trim()
+    val lower = clean.lowercase(Locale.ROOT)
+    for (prefix in listOf(
+      "hey d-vex", "hey d vex", "hey dvex", "hey devex",
+      "d-vex", "d vex", "dvex", "dee vex", "devex", "t-vex", "the vex",
+      "டி-வெக்ஸ்", "டிவெக்ஸ்", "டீவெக்ஸ்"
+    )) {
+      if (lower.startsWith(prefix)) {
+        val rem = clean.substring(prefix.length).trim()
+        return rem.trimStart(',', '.', ':', ';', ' ')
+      }
+    }
+    return ""
   }
 
   fun startListeningForCommand(preferredLanguage: String? = null) {
@@ -217,11 +275,23 @@ class AssistantRepository private constructor(private val context: Context) {
       onError = { error ->
         cancelStateWatchdog()
         Log.w(TAG_STT, "SpeechRecognizer returned error: $error")
-        _assistantState.value = DvexAssistantState.Error(error)
-        scope.launch {
-          delay(400)
-          // Conversational error recovery
-          respondWith("Sorry, I didn't catch that.")
+        if (error.contains("timed out", ignoreCase = true) ||
+            error.contains("No speech", ignoreCase = true) ||
+            error.contains("No match", ignoreCase = true)) {
+          // Timeout with no command: return to passive wake-word listening automatically
+          Log.i(TAG_STT, "No command detected before timeout; returning to passive wake-word listening")
+          _assistantState.value = DvexAssistantState.Standby
+          _latestResponse.value = "Standing by."
+          scope.launch {
+            delay(400)
+            returnToRestState()
+          }
+        } else {
+          _assistantState.value = DvexAssistantState.Error(error)
+          scope.launch {
+            delay(400)
+            respondWith("Sorry, I didn't catch that.")
+          }
         }
       },
       onPartialResult = { partialText ->
@@ -684,11 +754,15 @@ class AssistantRepository private constructor(private val context: Context) {
     }
   }
 
-  private fun returnToRestState() {
+  fun returnToRestState() {
     cancelStateWatchdog()
-    if (_settings.value.alwaysReadyEnabled && _settings.value.wakeWordEnabled) {
-      Log.i(TAG_VOICE, "Returned to standby (wake-word armed)")
-      startWakeWordListening()
+    if (_settings.value.wakeWordEnabled && DvexPermissionManager.hasAudioPermission(context)) {
+      Log.i(TAG_VOICE, "Returned to standby (passive wake-word listening re-armed)")
+      _assistantState.value = DvexAssistantState.WakeWordListening
+      scope.launch {
+        delay(250)
+        wakeWordManager.start()
+      }
     } else {
       Log.i(TAG_VOICE, "Returned to standby")
       _assistantState.value = DvexAssistantState.Standby
@@ -700,6 +774,11 @@ class AssistantRepository private constructor(private val context: Context) {
     stateWatchdogJob = scope.launch {
       delay(timeoutMs)
       Log.w(TAG_VOICE, "State watchdog tripped: $reason. Auto-recovering to Standby.")
+      try {
+        speechRecognizer.stopListening()
+      } catch (e: Exception) {
+        Log.d(TAG_VOICE, "Error stopping recognizer on watchdog", e)
+      }
       returnToRestState()
     }
   }

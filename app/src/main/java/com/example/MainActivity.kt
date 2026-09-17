@@ -62,6 +62,7 @@ class MainActivity : ComponentActivity() {
         DvexHud(
           uiState = uiState,
           onUiStateChange = { newState -> viewModel.updateUiState(newState) },
+          onSendCommand = { command -> viewModel.processVoiceCommand(command) },
           onCenterCoreTapped = {
             if (!DvexPermissionManager.hasAudioPermission(this)) {
               audioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
@@ -142,22 +143,33 @@ class MainActivity : ComponentActivity() {
 
   override fun onStart() {
     super.onStart()
-    // When main full tactical HUD is visible, dismiss the small floating overlay
-    DvexFloatingOrbService.stop(this)
+    val currentSettings = viewModel.settings.value
+
+    // Start passive wake-word listening in foreground if enabled and audio permission is granted
+    if (currentSettings.wakeWordEnabled && DvexPermissionManager.hasAudioPermission(this)) {
+      viewModel.startWakeWordListening()
+    }
 
     // Ensure Always-Ready foreground service is running if authorized
-    val currentSettings = viewModel.settings.value
     if (currentSettings.alwaysReadyEnabled && DvexPermissionManager.hasAudioPermission(this)) {
       DvexAssistantService.start(this)
+    }
+
+    // Ensure system-wide floating overlay is running if authorized
+    if (currentSettings.floatingOrbEnabled && DvexPermissionManager.hasOverlayPermission(this)) {
+      DvexFloatingOrbService.start(this)
     }
   }
 
   override fun onStop() {
     super.onStop()
-    // When main D-VEX app is minimized/closed, deploy the 56dp floating orb if enabled and authorized
+    // When main D-VEX app is minimized or sent to background, ensure the floating orb overlay stays active
     val currentSettings = viewModel.settings.value
     if (currentSettings.floatingOrbEnabled && DvexPermissionManager.hasOverlayPermission(this)) {
       DvexFloatingOrbService.start(this)
+    }
+    if (currentSettings.alwaysReadyEnabled && DvexPermissionManager.hasAudioPermission(this)) {
+      DvexAssistantService.start(this)
     }
   }
 }

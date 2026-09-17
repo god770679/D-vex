@@ -107,6 +107,39 @@ class DvexAssistantUnitTest {
   }
 
   @Test
+  fun testWakeWordHandsFreeActivationFlow() {
+    // Passive listening
+    var state: DvexAssistantState = DvexAssistantState.WakeWordListening
+    assertEquals(AiCoreState.IDLE, state.toAiCoreState())
+
+    // 1. Wake word detected: immediate verbal confirmation "Yes Sir"
+    state = DvexAssistantState.Speaking("Yes Sir")
+    assertEquals(AiCoreState.RESPONDING, state.toAiCoreState())
+    assertEquals(VoiceState.SPEAKING, state.toVoiceState())
+    assertEquals("Yes Sir", (state as DvexAssistantState.Speaking).text)
+
+    // 2. Automated listening for command (hands-free, no tap needed)
+    state = DvexAssistantState.Listening
+    assertEquals(AiCoreState.LISTENING, state.toAiCoreState())
+    assertEquals(VoiceState.LISTENING, state.toVoiceState())
+
+    // 3. Command processed & executed
+    state = DvexAssistantState.Processing
+    assertEquals(AiCoreState.PROCESSING, state.toAiCoreState())
+
+    state = DvexAssistantState.ExecutingAction("camera")
+    assertEquals(AiCoreState.EXECUTING, state.toAiCoreState())
+
+    // 4. Spoken confirmation
+    state = DvexAssistantState.Speaking("Opening Camera.")
+    assertEquals(AiCoreState.RESPONDING, state.toAiCoreState())
+
+    // 5. Automatic return to passive wake-word listening
+    state = DvexAssistantState.WakeWordListening
+    assertEquals(AiCoreState.IDLE, state.toAiCoreState())
+  }
+
+  @Test
   fun testAssistantErrorStateRecovery() {
     val errorState = DvexAssistantState.Error("Microphone timeout")
     assertEquals(AiCoreState.ERROR, errorState.toAiCoreState())

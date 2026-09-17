@@ -209,7 +209,7 @@ fun AlwaysReadySettingsDialog(
 
         SettingToggleRow(
           title = "VOICE CONFIRMATION",
-          subtitle = "Play verbal response (\"Yes?\") upon wake-word trigger",
+          subtitle = "Play verbal response (\"Yes Sir\") upon wake-word trigger",
           checked = settings.voiceConfirmationEnabled,
           onCheckedChange = { onSettingsChanged(settings.copy(voiceConfirmationEnabled = it)) }
         )
