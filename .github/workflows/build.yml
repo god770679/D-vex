@@ -1,6 +1,4 @@
 name: Build and Release APK
-- name: Build APK
-        run: gradle assembleDebug -Dorg.gradle.jvmargs="-Djava.awt.headless=true"
 on:
   push:
     branches: [ main ]
@@ -21,7 +19,7 @@ jobs:
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
       - name: Build APK
-        run: gradle assembleDebug
+        run: gradle assembleDebug -Dorg.gradle.jvmargs="-Djava.awt.headless=true"
       - name: Create Release with APK
         uses: softprops/action-gh-release@v2
         with:
