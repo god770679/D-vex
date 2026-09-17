@@ -144,8 +144,8 @@ class SpeechRecognizerManager(private val context: Context) {
 
         // Support English, Tamil, Tanglish (en-IN + ta-IN)
         val selectedLocale = when (preferredLanguage?.lowercase(Locale.ROOT)) {
-          "tamil", "ta", "ta-in" -> Locale("ta", "IN")
-          "tanglish", "en-in" -> Locale("en", "IN")
+          "tamil", "ta", "ta-in" -> Locale.forLanguageTag("ta-IN")
+          "tanglish", "en-in" -> Locale.forLanguageTag("en-IN")
           else -> Locale.getDefault()
         }
 

@@ -11,6 +11,7 @@ data class BrainExecutionResult(
   val toolResult: DvexToolResult,
   val spokenText: String,
   val displayText: String = spokenText,
+  val language: DetectedLanguage = DetectedLanguage.ENGLISH,
   val toolName: String = toolResult.toolName,
   val isSensitiveAction: Boolean = toolResult.requiresConfirmation,
   val pendingActionId: String? = toolResult.pendingActionId
@@ -117,6 +118,7 @@ class DvexSmartBrain(
       toolResult = toolResult,
       spokenText = spokenResponse,
       displayText = spokenResponse,
+      language = language,
       toolName = toolResult.toolName,
       isSensitiveAction = toolResult.requiresConfirmation,
       pendingActionId = toolResult.pendingActionId

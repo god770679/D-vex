@@ -15,7 +15,10 @@ import java.util.UUID
 
 /**
  * Text-to-Speech Manager for D-VEX Voice Pipeline.
- * Prioritizes natural female conversational voice with language matching and safe utterance length.
+ * Prioritizes natural, calm conversational voice synthesis.
+ * Explicitly prefers Google's TTS engine (com.google.android.tts) for high-quality
+ * Tamil (ta-IN) and Indian English (en-IN) neural voices.
+ * Includes graceful fallback to Tanglish if native Tamil TTS is missing or of poor quality.
  */
 class TextToSpeechManager(private val context: Context) {
 
@@ -32,77 +35,147 @@ class TextToSpeechManager(private val context: Context) {
     initTts()
   }
 
+  /**
+   * Initializes TextToSpeech. Prioritizes Google's TTS engine (com.google.android.tts)
+   * as it offers the highest-quality, most natural Indian and Tamil neural voices.
+   */
   private fun initTts() {
+    try {
+      val isGoogleTtsInstalled = isGoogleTtsEngineInstalled()
+      val initCallback = TextToSpeech.OnInitListener { status ->
+        if (status == TextToSpeech.SUCCESS) {
+          tts?.let { engine ->
+            setupProgressListener(engine)
+            setupVoiceAndLanguage(engine, Locale.getDefault())
+            isInitialized = true
+            Log.i(TAG, "D-VEX TextToSpeech initialized successfully (engine: ${engine.defaultEngine})")
+          }
+        } else {
+          Log.w(TAG, "Primary TTS initialization failed with status $status; attempting default engine fallback")
+          if (isGoogleTtsInstalled) {
+            fallbackToDefaultTts()
+          }
+        }
+      }
+
+      tts = if (isGoogleTtsInstalled) {
+        Log.i(TAG, "Selecting Google TTS engine for natural neural voice synthesis")
+        TextToSpeech(context, initCallback, GOOGLE_TTS_PACKAGE)
+      } else {
+        Log.i(TAG, "Google TTS not installed; using system default TTS engine")
+        TextToSpeech(context, initCallback)
+      }
+    } catch (e: Exception) {
+      Log.e(TAG, "Failed to initialize TTS engine, falling back to default", e)
+      fallbackToDefaultTts()
+    }
+  }
+
+  private fun fallbackToDefaultTts() {
     try {
       tts = TextToSpeech(context) { status ->
         if (status == TextToSpeech.SUCCESS) {
           tts?.let { engine ->
+            setupProgressListener(engine)
             setupVoiceAndLanguage(engine, Locale.getDefault())
-            engine.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
-              override fun onStart(utteranceId: String?) {
-                _isSpeaking.value = true
-                Log.d(TAG, "Utterance started: $utteranceId")
-              }
-
-              override fun onDone(utteranceId: String?) {
-                _isSpeaking.value = false
-                Log.i(TAG, "Speech completed")
-                mainHandler.post {
-                  onSpeechDoneCallback?.invoke()
-                  onSpeechDoneCallback = null
-                }
-              }
-
-              override fun onError(utteranceId: String?) {
-                _isSpeaking.value = false
-                Log.w(TAG, "Utterance playback error: $utteranceId")
-                mainHandler.post {
-                  onSpeechDoneCallback?.invoke()
-                  onSpeechDoneCallback = null
-                }
-              }
-            })
             isInitialized = true
-            Log.i(TAG, "D-VEX TextToSpeech initialized successfully")
+            Log.i(TAG, "Fallback default TTS engine initialized")
           }
         } else {
-          Log.w(TAG, "TTS initialization failed with status code: $status")
+          Log.e(TAG, "Fallback TTS initialization failed: $status")
         }
       }
     } catch (e: Exception) {
-      Log.e(TAG, "Failed to initialize TTS engine", e)
+      Log.e(TAG, "Error in fallback TTS initialization", e)
     }
   }
 
-  private fun setupVoiceAndLanguage(engine: TextToSpeech, targetLocale: Locale) {
-    try {
-      val langResult = engine.setLanguage(targetLocale)
-      if (langResult == TextToSpeech.LANG_MISSING_DATA || langResult == TextToSpeech.LANG_NOT_SUPPORTED) {
-        Log.w(TAG, "Target locale $targetLocale not fully supported; using US English fallback")
-        engine.setLanguage(Locale.US)
+  private fun isGoogleTtsEngineInstalled(): Boolean {
+    return try {
+      context.packageManager.getPackageInfo(GOOGLE_TTS_PACKAGE, 0)
+      true
+    } catch (e: Exception) {
+      false
+    }
+  }
+
+  private fun setupProgressListener(engine: TextToSpeech) {
+    engine.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+      override fun onStart(utteranceId: String?) {
+        _isSpeaking.value = true
+        Log.d(TAG, "Utterance started: $utteranceId")
       }
 
-      // Configure natural, articulate female pitch and tactical pace
-      engine.setPitch(1.08f)
-      engine.setSpeechRate(1.02f)
+      override fun onDone(utteranceId: String?) {
+        _isSpeaking.value = false
+        Log.i(TAG, "Speech completed")
+        mainHandler.post {
+          onSpeechDoneCallback?.invoke()
+          onSpeechDoneCallback = null
+        }
+      }
 
-      // Find natural female voice if available in engine voices
-      val availableVoices = engine.voices
-      if (!availableVoices.isNullOrEmpty()) {
-        val femaleVoice = availableVoices.firstOrNull { voice ->
-          val name = voice.name.lowercase(Locale.ROOT)
-          val matchesLocale = voice.locale.language == targetLocale.language || voice.locale.language == "en"
-          matchesLocale && (name.contains("female") || name.contains("fem") || name.contains("f0") ||
-              name.contains("en-us-x-sfg") || name.contains("en-in-x-dfg")) &&
-              !voice.isNetworkConnectionRequired
-        } ?: availableVoices.firstOrNull { voice ->
-          val name = voice.name.lowercase(Locale.ROOT)
-          (name.contains("female") || name.contains("fem"))
+      override fun onError(utteranceId: String?) {
+        _isSpeaking.value = false
+        Log.w(TAG, "Utterance playback error: $utteranceId")
+        mainHandler.post {
+          onSpeechDoneCallback?.invoke()
+          onSpeechDoneCallback = null
+        }
+      }
+    })
+  }
+
+  /**
+   * Configures pitch, speech rate, and selects the most natural, human-like voice.
+   * Adjusts intonation to sound calm, warm, and articulate rather than fast or robotic.
+   */
+  private fun setupVoiceAndLanguage(
+    engine: TextToSpeech,
+    targetLocale: Locale,
+    isTamil: Boolean = false
+  ) {
+    try {
+      if (isTamil) {
+        val tamilLocale = Locale.forLanguageTag("ta-IN")
+        val langResult = engine.setLanguage(tamilLocale)
+        val isLangAvailable = langResult != TextToSpeech.LANG_MISSING_DATA && langResult != TextToSpeech.LANG_NOT_SUPPORTED
+
+        if (isLangAvailable) {
+          // Calmer, measured intonation for Tamil:
+          // Pitch: 0.98f (natural, warm pitch; prevents eerie/sharp robotic tone)
+          // Speech rate: 0.93f (deliberate cadence allowing full phonetic articulation)
+          engine.setPitch(0.98f)
+          engine.setSpeechRate(0.93f)
+
+          val bestTamilVoice = selectBestTamilVoice(engine)
+          if (bestTamilVoice != null) {
+            engine.voice = bestTamilVoice
+            Log.i(TAG, "Selected natural Tamil voice: ${bestTamilVoice.name}")
+          } else {
+            Log.i(TAG, "Using engine default Tamil voice with optimized pitch (0.98) and speech rate (0.93)")
+          }
+        } else {
+          Log.w(TAG, "Tamil locale not fully supported by active TTS engine; using Indian English fallback")
+          engine.setLanguage(Locale.forLanguageTag("en-IN"))
+          engine.setPitch(1.0f)
+          engine.setSpeechRate(0.95f)
+        }
+      } else {
+        val langResult = engine.setLanguage(targetLocale)
+        if (langResult == TextToSpeech.LANG_MISSING_DATA || langResult == TextToSpeech.LANG_NOT_SUPPORTED) {
+          Log.w(TAG, "Target locale $targetLocale not supported; falling back to US English")
+          engine.setLanguage(Locale.US)
         }
 
-        if (femaleVoice != null) {
-          engine.voice = femaleVoice
-          Log.i(TAG, "Selected natural female voice: ${femaleVoice.name}")
+        // Calmer, pleasant, conversational pace for English
+        engine.setPitch(1.0f)
+        engine.setSpeechRate(0.96f)
+
+        val bestVoice = selectBestVoice(engine, targetLocale)
+        if (bestVoice != null) {
+          engine.voice = bestVoice
+          Log.i(TAG, "Selected natural voice: ${bestVoice.name}")
         }
       }
     } catch (e: Throwable) {
@@ -110,6 +183,123 @@ class TextToSpeechManager(private val context: Context) {
     }
   }
 
+  /**
+   * Evaluates available voices and selects the highest-quality Tamil voice.
+   * Prioritizes Google neural voices (ta-in-x-taf / tag) and offline high-definition voices.
+   */
+  private fun selectBestTamilVoice(engine: TextToSpeech): Voice? {
+    val availableVoices = try {
+      engine.voices
+    } catch (e: Exception) {
+      null
+    } ?: return null
+
+    val tamilVoices = availableVoices.filter { voice ->
+      val lang = voice.locale.language.lowercase(Locale.ROOT)
+      val tag = voice.locale.toLanguageTag().lowercase(Locale.ROOT)
+      lang == "ta" || tag.startsWith("ta")
+    }
+
+    if (tamilVoices.isEmpty()) return null
+
+    return tamilVoices.maxByOrNull { voice ->
+      var score = 0
+      val name = voice.name.lowercase(Locale.ROOT)
+
+      // Quality rating
+      score += voice.quality * 2
+
+      // Prefer Google neural Tamil voices (e.g. ta-in-x-taf, ta-in-x-tag)
+      if (name.contains("taf") || name.contains("tag") || name.contains("female") || name.contains("fem")) {
+        score += 500
+      }
+      // Prefer installed/offline voices for lower latency and zero connection jitter
+      if (!voice.isNetworkConnectionRequired || name.contains("local")) {
+        score += 300
+      }
+      // Penalize missing or uninstalled voice data
+      if (voice.features.contains(TextToSpeech.Engine.KEY_FEATURE_NOT_INSTALLED)) {
+        score -= 1000
+      }
+      score
+    }
+  }
+
+  /**
+   * Selects the highest quality natural conversational voice for non-Tamil locales.
+   */
+  private fun selectBestVoice(engine: TextToSpeech, targetLocale: Locale): Voice? {
+    val availableVoices = try {
+      engine.voices
+    } catch (e: Exception) {
+      null
+    } ?: return null
+
+    val targetLang = targetLocale.language.lowercase(Locale.ROOT)
+    val matchingVoices = availableVoices.filter { voice ->
+      voice.locale.language.lowercase(Locale.ROOT) == targetLang
+    }
+    if (matchingVoices.isEmpty()) return null
+
+    return matchingVoices.maxByOrNull { voice ->
+      var score = 0
+      val name = voice.name.lowercase(Locale.ROOT)
+      score += voice.quality * 2
+      if (name.contains("female") || name.contains("fem") || name.contains("f0") ||
+          name.contains("en-in-x-dfg") || name.contains("en-us-x-sfg")) {
+        score += 500
+      }
+      if (!voice.isNetworkConnectionRequired || name.contains("local")) {
+        score += 300
+      }
+      if (voice.features.contains(TextToSpeech.Engine.KEY_FEATURE_NOT_INSTALLED)) {
+        score -= 1000
+      }
+      score
+    }
+  }
+
+  /**
+   * Checks whether the current TTS engine has satisfactory, installed voice support for Tamil.
+   */
+  fun isTamilQualityAcceptable(): Boolean {
+    val engine = tts ?: return false
+    val tamilLocale = Locale.forLanguageTag("ta-IN")
+    val status = try {
+      engine.isLanguageAvailable(tamilLocale)
+    } catch (e: Exception) {
+      TextToSpeech.LANG_NOT_SUPPORTED
+    }
+
+    if (status == TextToSpeech.LANG_NOT_SUPPORTED || status == TextToSpeech.LANG_MISSING_DATA) {
+      return false
+    }
+
+    val availableVoices = try {
+      engine.voices
+    } catch (e: Exception) {
+      null
+    }
+
+    val tamilVoices = availableVoices?.filter { voice ->
+      val lang = voice.locale.language.lowercase(Locale.ROOT)
+      val tag = voice.locale.toLanguageTag().lowercase(Locale.ROOT)
+      lang == "ta" || tag.startsWith("ta")
+    }
+
+    if (tamilVoices != null && tamilVoices.isNotEmpty()) {
+      // Must have at least one voice that is installed and not missing data
+      return tamilVoices.any { !it.features.contains(TextToSpeech.Engine.KEY_FEATURE_NOT_INSTALLED) }
+    }
+
+    return status >= TextToSpeech.LANG_AVAILABLE
+  }
+
+  /**
+   * Synthesizes and speaks text.
+   * Auto-detects Tamil script and verifies voice quality. If native Tamil TTS is missing
+   * or unnatural on device, smoothly falls back to Tanglish via Indian English voice.
+   */
   fun speak(text: String, languageCode: String? = null, onDone: (() -> Unit)? = null) {
     if (!isInitialized || tts == null) {
       Log.w(TAG, "TTS not ready; falling back immediately")
@@ -124,22 +314,39 @@ class TextToSpeechManager(private val context: Context) {
 
     try {
       tts?.let { engine ->
-        if (languageCode != null) {
-          val locale = when (languageCode.lowercase(Locale.ROOT)) {
-            "tamil", "ta", "ta-in" -> Locale("ta", "IN")
-            "tanglish", "en-in" -> Locale("en", "IN")
-            else -> Locale.US
-          }
-          setupVoiceAndLanguage(engine, locale)
+        val containsTamil = TamilTransliteration.containsTamilScript(text)
+        val isExplicitTamil = languageCode != null && when (languageCode.lowercase(Locale.ROOT)) {
+          "tamil", "ta", "ta-in" -> true
+          else -> false
         }
 
-        // Limit excessively long responses to concise conversational speech (up to ~250 chars)
-        val textToSpeak = sanitizeTextForSpeech(text)
+        val treatAsTamil = containsTamil || isExplicitTamil
 
-        val utteranceId = UUID.randomUUID().toString()
-        _isSpeaking.value = true
-        Log.i(TAG, "Speaking response: \"$textToSpeak\"")
-        engine.speak(textToSpeak, TextToSpeech.QUEUE_FLUSH, null, utteranceId)
+        if (treatAsTamil) {
+          val tamilQualityOk = isTamilQualityAcceptable()
+
+          if (tamilQualityOk && containsTamil) {
+            // Native Tamil is supported with good quality: speak with calm Tamil settings
+            setupVoiceAndLanguage(engine, Locale.forLanguageTag("ta-IN"), isTamil = true)
+            val textToSpeak = sanitizeTextForSpeech(text)
+            speakUtterance(engine, textToSpeak)
+          } else {
+            // Graceful fallback: Convert to Tanglish (Latin script) and speak with Indian English voice
+            Log.i(TAG, "Native Tamil TTS quality is unverified/absent; activating graceful Tanglish fallback")
+            setupVoiceAndLanguage(engine, Locale.forLanguageTag("en-IN"), isTamil = false)
+            val tanglishText = TamilTransliteration.toTanglish(text)
+            val textToSpeak = sanitizeTextForSpeech(tanglishText)
+            speakUtterance(engine, textToSpeak)
+          }
+        } else {
+          val locale = when (languageCode?.lowercase(Locale.ROOT)) {
+            "tanglish", "en-in" -> Locale.forLanguageTag("en-IN")
+            else -> Locale.US
+          }
+          setupVoiceAndLanguage(engine, locale, isTamil = false)
+          val textToSpeak = sanitizeTextForSpeech(text)
+          speakUtterance(engine, textToSpeak)
+        }
       }
     } catch (e: Exception) {
       Log.e(TAG, "Error speaking utterance", e)
@@ -148,12 +355,28 @@ class TextToSpeechManager(private val context: Context) {
     }
   }
 
+  private fun speakUtterance(engine: TextToSpeech, textToSpeak: String) {
+    val utteranceId = UUID.randomUUID().toString()
+    _isSpeaking.value = true
+    Log.i(TAG, "Speaking response: \"$textToSpeak\"")
+    engine.speak(textToSpeak, TextToSpeech.QUEUE_FLUSH, null, utteranceId)
+  }
+
   /**
-   * Sanitizes markdown, symbols, and caps excessive text length to prevent long monologues.
+   * Sanitizes markdown, punctuation noise, and prevents run-on monologues
+   * while preserving pauses (periods, commas) for calm, natural cadence.
    */
   private fun sanitizeTextForSpeech(input: String): String {
     var cleaned = input
       .replace(Regex("[*#_`~\\[\\]()<>{}=|]"), " ")
+      .replace(Regex("\\s+"), " ")
+      .trim()
+
+    // Ensure space after punctuation for natural breath pauses
+    cleaned = cleaned
+      .replace(",", ", ")
+      .replace(".", ". ")
+      .replace("?", "? ")
       .replace(Regex("\\s+"), " ")
       .trim()
 
@@ -191,5 +414,6 @@ class TextToSpeechManager(private val context: Context) {
 
   companion object {
     private const val TAG = "[D-VEX][TTS]"
+    private const val GOOGLE_TTS_PACKAGE = "com.google.android.tts"
   }
 }

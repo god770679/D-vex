@@ -339,33 +339,33 @@ class AssistantRepository private constructor(private val context: Context) {
             }
           )
           _pendingConfirmation.value = pending
-          respondWith(brainResult.spokenText)
+          respondWith(brainResult.spokenText, brainResult.language)
         }
         DvexToolStatus.SUCCESS -> {
           Log.i(TAG_ACTION, "Smart Brain execution: ${toolResult.toolName} -> Success")
           _assistantState.value = DvexAssistantState.ExecutingAction(toolResult.toolName)
           delay(350)
-          respondWith(brainResult.spokenText)
+          respondWith(brainResult.spokenText, brainResult.language)
         }
         DvexToolStatus.PERMISSION_REQUIRED -> {
           Log.w(TAG_ACTION, "Action needs permission: ${toolResult.message}")
           _assistantState.value = DvexAssistantState.Error("Permission required")
-          respondWith(brainResult.spokenText)
+          respondWith(brainResult.spokenText, brainResult.language)
         }
         DvexToolStatus.NOT_FOUND -> {
           Log.w(TAG_ACTION, "Target not found: ${toolResult.message}")
           _assistantState.value = DvexAssistantState.Error("Not found")
-          respondWith(brainResult.spokenText)
+          respondWith(brainResult.spokenText, brainResult.language)
         }
         DvexToolStatus.UNSUPPORTED -> {
           Log.w(TAG_ACTION, "Action not supported: ${toolResult.message}")
           _assistantState.value = DvexAssistantState.Error("Unsupported action")
-          respondWith(brainResult.spokenText)
+          respondWith(brainResult.spokenText, brainResult.language)
         }
         DvexToolStatus.FAILED, DvexToolStatus.ERROR -> {
           Log.w(TAG_ACTION, "Execution failed: ${toolResult.message}")
           _assistantState.value = DvexAssistantState.Error("Execution failed")
-          respondWith(brainResult.spokenText)
+          respondWith(brainResult.spokenText, brainResult.language)
         }
       }
     }
@@ -736,13 +736,14 @@ class AssistantRepository private constructor(private val context: Context) {
     respondWith("Action cancelled by user.")
   }
 
-  private fun respondWith(text: String) {
+  private fun respondWith(text: String, language: com.example.brain.DetectedLanguage? = null) {
     _latestResponse.value = text
     _assistantState.value = DvexAssistantState.Speaking(text)
-    Log.i(TAG_TTS, "Speaking response: \"$text\"")
+    Log.i(TAG_TTS, "Speaking response ($language): \"$text\"")
 
     if (_settings.value.voiceResponseEnabled) {
-      ttsManager.speak(text) {
+      val langCode = language?.name?.lowercase(Locale.ROOT)
+      ttsManager.speak(text, langCode) {
         Log.i(TAG_VOICE, "TTS finished; returning to standby")
         returnToRestState()
       }
