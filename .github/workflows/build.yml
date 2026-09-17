@@ -1,4 +1,6 @@
 name: Build and Release APK
+- name: Build APK
+        run: gradle assembleDebug -Dorg.gradle.jvmargs="-Djava.awt.headless=true"
 on:
   push:
     branches: [ main ]
