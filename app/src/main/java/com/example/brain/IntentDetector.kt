@@ -28,10 +28,23 @@ class IntentDetector {
 
     // Check for empty or noise input
     if (lower.isBlank()) {
+      val rawLower = rawInput.lowercase(Locale.ROOT).trim()
+      if (rawLower.contains("d-vex") || rawLower.contains("dvex") || rawLower.contains("d vex") ||
+          rawLower.contains("dee vex") || rawLower.contains("devex") || rawLower.contains("hey d") ||
+          rawLower.contains("டி-வெக்ஸ்") || rawLower.contains("டிவெக்ஸ்") || rawLower.contains("டீவெக்ஸ்")) {
+        return DetectionResult(DvexIntent.WakeGreeting, 1.0f, language, rawInput)
+      }
       return DetectionResult(DvexIntent.Unknown(rawInput), 0.0f, language, cleanText)
     }
 
-    // 0. Contextual follow-up resolution (e.g., "Search for tractor videos" after opening YouTube)
+    // Wake word greeting as standalone utterance
+    if (lower == "d-vex" || lower == "dvex" || lower == "d vex" || lower == "hey d-vex" ||
+        lower == "hey dvex" || lower == "hey d vex" || lower == "dee vex" ||
+        lower == "டி-வெக்ஸ்" || lower == "டிவெக்ஸ்" || lower == "டீவெக்ஸ்") {
+      return DetectionResult(DvexIntent.WakeGreeting, 1.0f, language, rawInput)
+    }
+
+    // 0. Contextual follow-up resolution (e.g., "Tomorrow?" after weather query)
     if (context != null) {
       val contextualIntent = context.resolveContextualFollowUp(cleanText)
       if (contextualIntent != null) {
@@ -39,13 +52,19 @@ class IntentDetector {
       }
     }
 
-    // 1. Multi-Step Commands (e.g., "Open YouTube and search for tractor videos")
+    // 1. Hardware Utilities: Flashlight, Alarm, Timer
+    val hardwareUtility = parseHardwareUtility(cleanText, lower)
+    if (hardwareUtility != null) {
+      return DetectionResult(hardwareUtility, 0.98f, language, cleanText)
+    }
+
+    // 2. Multi-Step Commands (e.g., "Open YouTube and search for tractor videos")
     val multiStep = parseMultiStepCommand(cleanText, lower)
     if (multiStep != null) {
       return DetectionResult(multiStep, 0.92f, language, cleanText)
     }
 
-    // 2. Sensitive Actions (Call Contact / Send Message)
+    // 3. Sensitive Actions (Call Contact / Send Message / Send Email)
     val sensitiveAction = parseSensitiveAction(cleanText, lower)
     if (sensitiveAction != null) {
       return DetectionResult(sensitiveAction, 0.95f, language, cleanText)
@@ -114,8 +133,95 @@ class IntentDetector {
     return null
   }
 
+  // --- Hardware Utility (Flashlight, Alarm, Timer) ---
+  private fun parseHardwareUtility(rawText: String, lower: String): DvexIntent? {
+    // Flashlight / Torch
+    if (lower.contains("flashlight") || lower.contains("torch") || lower.contains("torchlight") ||
+        lower.contains("டார்ச்") || lower.contains("பிளாஷ்லைட்")) {
+      val isOff = lower.contains("off") || lower.contains("turn off") ||
+          lower.contains("anai") || lower.contains("close") || lower.contains("stop") ||
+          lower.contains("அணை")
+      return DvexIntent.ToggleFlashlight(enable = !isOff)
+    }
+
+    // Alarm
+    if (lower.contains("alarm") || lower.contains("wake me up") || lower.contains("எழுப்பு") || lower.contains("அலாரம்")) {
+      // Find time: e.g. "6 am", "7:30 pm", "7 30", "6 o'clock"
+      val timeRegex = Regex("(\\d{1,2})(?::(\\d{2}))?\\s*(am|pm)?", RegexOption.IGNORE_CASE)
+      val match = timeRegex.find(lower.replace("alarm", "").replace("for", ""))
+      if (match != null) {
+        var hour = match.groupValues[1].toIntOrNull() ?: 7
+        val minute = match.groupValues[2].toIntOrNull() ?: 0
+        val ampm = match.groupValues[3].lowercase(Locale.ROOT)
+        if (ampm == "pm" && hour < 12) hour += 12
+        if (ampm == "am" && hour == 12) hour = 0
+        return DvexIntent.SetAlarm(hour = hour, minute = minute, message = "D-VEX Alarm")
+      }
+      return DvexIntent.SetAlarm(hour = 7, minute = 0, message = "D-VEX Alarm")
+    }
+
+    // Timer
+    if (lower.contains("timer") || lower.contains("டைமர்") || lower.contains("நொடி") || lower.contains("நிமிடம்")) {
+      val minMatch = Regex("(\\d+)\\s*(?:min|mins|minute|minutes|நிமிடம்)").find(lower)
+      val secMatch = Regex("(\\d+)\\s*(?:sec|secs|second|seconds|நொடி)").find(lower)
+      val minutes = minMatch?.groupValues?.get(1)?.toIntOrNull() ?: 0
+      val seconds = secMatch?.groupValues?.get(1)?.toIntOrNull() ?: 0
+      val totalSec = if (minutes > 0 || seconds > 0) (minutes * 60) + seconds else {
+        val rawNum = Regex("(\\d+)").find(lower)?.groupValues?.get(1)?.toIntOrNull() ?: 5
+        rawNum * 60
+      }
+      return DvexIntent.SetTimer(seconds = totalSec, message = "D-VEX Timer")
+    }
+
+    return null
+  }
+
   // --- Sensitive Actions ---
   private fun parseSensitiveAction(rawText: String, lower: String): DvexIntent? {
+    // Email commands
+    val isEmail = lower.startsWith("send email to ") ||
+        lower.startsWith("send email ") ||
+        lower.startsWith("email ") ||
+        lower.contains("email anuppu") ||
+        lower.contains("email anupu") ||
+        lower.contains("mail anuppu")
+
+    if (isEmail) {
+      var recipient = rawText
+        .replace(Regex("^(can you please |can you |please )?send email to", RegexOption.IGNORE_CASE), "")
+        .replace(Regex("^(can you please |can you |please )?send email", RegexOption.IGNORE_CASE), "")
+        .replace(Regex("^(can you please |can you |please )?email", RegexOption.IGNORE_CASE), "")
+        .replace("email anuppu", "", ignoreCase = true)
+        .replace("email anupu", "", ignoreCase = true)
+        .replace("mail anuppu", "", ignoreCase = true)
+        .replace("ku email", "", ignoreCase = true)
+        .replace("ku mail", "", ignoreCase = true)
+        .trim()
+
+      var subject: String? = null
+      var body: String? = null
+
+      if (recipient.contains(" about ", ignoreCase = true)) {
+        val parts = recipient.split(Regex(" about ", RegexOption.IGNORE_CASE), limit = 2)
+        recipient = parts[0].trim()
+        val rest = parts[1].trim()
+        if (rest.contains(" saying ", ignoreCase = true)) {
+          val subParts = rest.split(Regex(" saying ", RegexOption.IGNORE_CASE), limit = 2)
+          subject = subParts[0].trim()
+          body = subParts[1].trim()
+        } else {
+          subject = rest
+        }
+      } else if (recipient.contains(" saying ", ignoreCase = true)) {
+        val parts = recipient.split(Regex(" saying ", RegexOption.IGNORE_CASE), limit = 2)
+        recipient = parts[0].trim()
+        body = parts[1].trim()
+      }
+
+      val cleanTarget = recipient.trimEnd('.', '?', '!', ' ')
+      return DvexIntent.SendEmail(cleanTarget.ifBlank { "recipient" }, subject, body)
+    }
+
     // Call commands
     val isCall = lower.startsWith("call ") ||
         lower.startsWith("dial ") ||
@@ -148,7 +254,9 @@ class IntentDetector {
         lower.startsWith("send a text to ") ||
         lower.startsWith("text ") ||
         lower.contains("message anupu") ||
-        lower.contains("sms anupu")
+        lower.contains("message anuppu") ||
+        lower.contains("sms anupu") ||
+        lower.contains("sms anuppu")
 
     if (isMessage) {
       var target = rawText
@@ -158,7 +266,11 @@ class IntentDetector {
         .replace(Regex("^(can you please |can you |please )?send a text to", RegexOption.IGNORE_CASE), "")
         .replace(Regex("^(can you please |can you |please )?text", RegexOption.IGNORE_CASE), "")
         .replace("message anupu", "", ignoreCase = true)
+        .replace("message anuppu", "", ignoreCase = true)
         .replace("sms anupu", "", ignoreCase = true)
+        .replace("sms anuppu", "", ignoreCase = true)
+        .replace("ku message", "", ignoreCase = true)
+        .replace("ku sms", "", ignoreCase = true)
         .trim()
 
       var body: String? = null
@@ -222,9 +334,29 @@ class IntentDetector {
         lower.contains("vaanavilai") ||
         lower.contains("climatic") ||
         lower.contains("mazhai") ||
-        lower.contains("weather epdi irukku")
+        lower.contains("weather epdi irukku") ||
+        lower.contains("வானிலை")
     ) {
-      return DvexIntent.GetWeather()
+      val isTomorrow = lower.contains("tomorrow") || lower.contains("naalai") || lower.contains("naalaiku") || lower.contains("நாளை")
+      val knownCities = listOf(
+        "chennai", "coimbatore", "madurai", "salem", "trichy", "tiruchirappalli", "tirunelveli",
+        "bangalore", "bengaluru", "delhi", "mumbai", "hyderabad", "kolkata", "pune", "pondicherry", "vellore"
+      )
+      var location: String? = null
+      for (city in knownCities) {
+        if (lower.contains(city)) {
+          location = city.replaceFirstChar { it.uppercase() }
+          break
+        }
+      }
+      if (location == null) {
+        // Try extracting "in <city>" or "for <city>"
+        val cityMatch = Regex("(?:in|for|of|at)\\s+([a-zA-Z]+)").find(lower)
+        if (cityMatch != null) {
+          location = cityMatch.groupValues[1].replaceFirstChar { it.uppercase() }
+        }
+      }
+      return DvexIntent.GetWeather(location = location ?: "Chennai", isTomorrow = isTomorrow)
     }
 
     // Time
@@ -263,7 +395,24 @@ class IntentDetector {
         lower.contains("seithigal") ||
         lower.contains("செய்திகள்")
     ) {
-      return DvexIntent.GetNews()
+      val topic = rawText.replace(Regex("^(what is the|tell me the|latest|current)?\\s*(news|headlines|seithigal)", RegexOption.IGNORE_CASE), "").trim()
+      return DvexIntent.GetNews(topic = topic.ifBlank { null })
+    }
+
+    // Real-Time Web queries (Prices, Sports, Scores, Latest info)
+    val isRealTimeQuery = lower.startsWith("latest ") ||
+        lower.contains("current price") ||
+        lower.contains("gold rate") ||
+        lower.contains("cricket score") ||
+        lower.contains("score") ||
+        lower.contains("who won") ||
+        lower.contains("match result") ||
+        lower.contains("sports result") ||
+        lower.contains("recent update") ||
+        lower.contains("விலை என்ன")
+
+    if (isRealTimeQuery) {
+      return DvexIntent.SearchWeb(rawText.trim())
     }
 
     // Web Search

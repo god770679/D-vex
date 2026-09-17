@@ -30,6 +30,12 @@ class ConversationContext(private val maxHistorySize: Int = 6) {
   var lastLanguage: DetectedLanguage = DetectedLanguage.ENGLISH
     private set
 
+  var lastWeatherLocation: String? = null
+    private set
+
+  var lastContactRecipient: String? = null
+    private set
+
   fun update(
     input: String,
     intent: DvexIntent,
@@ -45,6 +51,17 @@ class ConversationContext(private val maxHistorySize: Int = 6) {
       }
       is DvexIntent.SearchWeb -> {
         lastQuery = intent.query
+      }
+      is DvexIntent.GetWeather -> {
+        if (!intent.location.isNullOrBlank()) {
+          lastWeatherLocation = intent.location
+        }
+      }
+      is DvexIntent.CallContact -> {
+        lastContactRecipient = intent.recipient
+      }
+      is DvexIntent.SendMessage -> {
+        lastContactRecipient = intent.recipient
       }
       is DvexIntent.MultiStep -> {
         if (intent.first is DvexIntent.OpenApp) {
@@ -69,13 +86,35 @@ class ConversationContext(private val maxHistorySize: Int = 6) {
   }
 
   /**
-   * Resolves context-dependent follow-up inputs like "Search for tractor videos"
-   * when YouTube or Browser was recently opened.
+   * Resolves context-dependent follow-up inputs like "Tomorrow?" or "Search for tractor videos"
+   * based on short-term conversation state.
    */
   fun resolveContextualFollowUp(cleanInput: String): DvexIntent? {
-    val lower = cleanInput.lowercase()
+    val lower = cleanInput.lowercase().trim().trimEnd('?', '.', '!')
 
-    // Follow-up search inside the last active application
+    // 1. Follow-up weather question (e.g. "Tomorrow?", "What about tomorrow?", "naalai", "naalaiku?")
+    if (lower == "tomorrow" || lower == "what about tomorrow" || lower == "how about tomorrow" ||
+        lower == "and tomorrow" || lower == "naalai" || lower == "naalaiku" || lower.contains("naalai")) {
+      if (lastWeatherLocation != null || lastIntent is DvexIntent.GetWeather) {
+        val city = lastWeatherLocation ?: "Chennai"
+        return DvexIntent.GetWeather(location = city, isTomorrow = true)
+      }
+    }
+
+    // 2. Follow-up contact question (e.g. "Call him", "Call her", "Avanukku call pannu")
+    if (lastContactRecipient != null) {
+      if (lower == "call him" || lower == "call her" || lower == "call" ||
+          lower == "avanukku call pannu" || lower == "avalukku call pannu") {
+        return DvexIntent.CallContact(lastContactRecipient!!)
+      }
+      if (lower.startsWith("message him ") || lower.startsWith("message her ") ||
+          lower.startsWith("text him ") || lower.startsWith("text her ")) {
+        val msg = lower.substringAfter("him ").substringAfter("her ").trim()
+        return DvexIntent.SendMessage(recipient = lastContactRecipient!!, messageText = msg)
+      }
+    }
+
+    // 3. Follow-up search inside the last active application
     val currentApp = lastActiveApp?.lowercase()
     if (currentApp != null && (lower.startsWith("search for ") || lower.startsWith("search ") || lower.startsWith("find "))) {
       val query = lower.replace("search for ", "")
@@ -111,5 +150,7 @@ class ConversationContext(private val maxHistorySize: Int = 6) {
     lastQuery = null
     lastIntent = null
     lastLanguage = DetectedLanguage.ENGLISH
+    lastWeatherLocation = null
+    lastContactRecipient = null
   }
 }

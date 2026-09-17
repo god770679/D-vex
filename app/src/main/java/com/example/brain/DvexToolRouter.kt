@@ -4,9 +4,12 @@ import android.content.Context
 import android.content.SharedPreferences
 import android.util.Log
 import com.example.control.AppLauncherRepository
+import com.example.control.ContactResolver
 import com.example.control.DeviceControlRepository
 import com.example.control.DvexAccessibilityService
+import com.example.control.ResolvedContact
 import com.example.data.remote.MediaCommand
+import com.example.data.remote.RealTimeWebService
 import com.example.data.remote.ToolResultStatus
 import com.example.data.remote.VolumeDirection
 import java.text.SimpleDateFormat
@@ -26,6 +29,8 @@ class DvexToolRouter(
 
   private val prefs: SharedPreferences =
     context.getSharedPreferences("dvex_brain_prefs", Context.MODE_PRIVATE)
+  private val contactResolver = ContactResolver(context)
+  private val realTimeWeb = RealTimeWebService()
 
   /**
    * Main dispatch entry point for DvexIntent.
@@ -34,6 +39,9 @@ class DvexToolRouter(
     Log.i(TAG_ROUTER, "Routing intent: $intent")
 
     return when (intent) {
+      // --- Wake Greeting ---
+      is DvexIntent.WakeGreeting -> executeWakeGreeting()
+
       // --- App Operations ---
       is DvexIntent.OpenApp -> executeOpenApp(intent.appName)
       is DvexIntent.CloseApp -> executeCloseApp(intent.appName)
@@ -48,12 +56,18 @@ class DvexToolRouter(
       is DvexIntent.LockScreen -> executeLockScreen()
       is DvexIntent.Scroll -> executeScroll(intent.direction)
 
-      // --- Communication (Sensitive Confirmation) ---
+      // --- Hardware Tools ---
+      is DvexIntent.ToggleFlashlight -> executeToggleFlashlight(intent.enable)
+      is DvexIntent.SetAlarm -> executeSetAlarm(intent.hour, intent.minute, intent.message)
+      is DvexIntent.SetTimer -> executeSetTimer(intent.seconds, intent.message)
+
+      // --- Communication (Sensitive Voice Confirmation) ---
       is DvexIntent.CallContact -> executeCallContact(intent.recipient)
       is DvexIntent.SendMessage -> executeSendMessage(intent.recipient, intent.messageText)
+      is DvexIntent.SendEmail -> executeSendEmail(intent.recipient, intent.subject, intent.body)
 
       // --- Live Information ---
-      is DvexIntent.GetWeather -> executeGetWeather(intent.location)
+      is DvexIntent.GetWeather -> executeGetWeather(intent.location, intent.isTomorrow)
       is DvexIntent.GetTime -> executeGetTime()
       is DvexIntent.Calculate -> executeCalculate(intent.expression)
       is DvexIntent.GetNews -> executeGetNews(intent.topic)
@@ -87,11 +101,22 @@ class DvexToolRouter(
         DvexToolResult(
           status = DvexToolStatus.FAILED,
           toolName = "unknown",
-          message = "I'm not sure what you want me to do.",
-          spokenText = "I'm not sure what you want me to do."
+          message = "I'm not sure how to help with that, Sir.",
+          spokenText = "I'm not sure how to help with that, Sir."
         )
       }
     }
+  }
+
+  // --- Wake Greeting ---
+  private fun executeWakeGreeting(): DvexToolResult {
+    val greeting = "Yes, Sir. சொல்லுங்க."
+    return DvexToolResult(
+      status = DvexToolStatus.SUCCESS,
+      toolName = "wake_greeting",
+      message = greeting,
+      spokenText = greeting
+    )
   }
 
   // --- App Launcher Execution ---
@@ -264,13 +289,49 @@ class DvexToolRouter(
     return mapDeviceResult(res, "media", res.message)
   }
 
-  // --- Sensitive Actions (Confirmation Mandatory) ---
+  // --- Hardware Tools ---
+  private fun executeToggleFlashlight(enable: Boolean?): DvexToolResult {
+    val res = deviceControl.toggleFlashlight(enable)
+    val text = if (res.status == ToolResultStatus.SUCCESS) {
+      if (enable == false) "Flashlight turned off, Sir." else "Flashlight turned on, Sir."
+    } else {
+      "I couldn't control the flashlight, Sir."
+    }
+    return mapDeviceResult(res, "flashlight", text)
+  }
+
+  private fun executeSetAlarm(hour: Int, minute: Int, message: String?): DvexToolResult {
+    val res = deviceControl.setAlarm(hour, minute, message)
+    val timeFormatted = String.format(Locale.getDefault(), "%02d:%02d", hour, minute)
+    return mapDeviceResult(res, "set_alarm", "Alarm set for $timeFormatted, Sir.")
+  }
+
+  private fun executeSetTimer(seconds: Int, message: String?): DvexToolResult {
+    val res = deviceControl.setTimer(seconds, message)
+    val minutes = seconds / 60
+    val label = if (minutes > 0) "$minutes minutes" else "$seconds seconds"
+    return mapDeviceResult(res, "set_timer", "Timer set for $label, Sir.")
+  }
+
+  // --- Sensitive Actions (Voice Confirmation Mandatory) ---
   private fun executeCallContact(recipient: String): DvexToolResult {
-    val prompt = "Do you want me to call $recipient?"
+    val clean = recipient.trim()
+    val contact = contactResolver.resolveContact(clean)
+    if (contact == null) {
+      val failText = "I couldn't find $clean in your contacts, Sir."
+      return DvexToolResult(
+        status = DvexToolStatus.FAILED,
+        toolName = "call_contact",
+        message = failText,
+        spokenText = failText
+      )
+    }
+
+    val prompt = "Okay, Sir. Call ${contact.name}?"
     return DvexToolResult(
       status = DvexToolStatus.CONFIRMATION_REQUIRED,
       toolName = "call_contact",
-      message = "Confirmation required: Call $recipient?",
+      message = "Confirmation required: Call ${contact.name} (${contact.phoneNumber})?",
       spokenText = prompt,
       requiresConfirmation = true,
       confirmationPrompt = prompt,
@@ -279,11 +340,45 @@ class DvexToolRouter(
   }
 
   private fun executeSendMessage(recipient: String, messageText: String?): DvexToolResult {
-    val prompt = "Do you want me to send a message to $recipient?"
+    val clean = recipient.trim()
+    val contact = contactResolver.resolveContact(clean)
+    val displayName = contact?.name ?: clean
+
+    if (messageText.isNullOrBlank()) {
+      val askPrompt = "What message should I send to $displayName, Sir?"
+      return DvexToolResult(
+        status = DvexToolStatus.CONFIRMATION_REQUIRED,
+        toolName = "send_message",
+        message = askPrompt,
+        spokenText = askPrompt,
+        requiresConfirmation = true,
+        confirmationPrompt = askPrompt,
+        pendingActionId = UUID.randomUUID().toString()
+      )
+    }
+
+    val prompt = "Okay, Sir. Send this message to $displayName: '$messageText'?"
     return DvexToolResult(
       status = DvexToolStatus.CONFIRMATION_REQUIRED,
       toolName = "send_message",
-      message = "Confirmation required: Send message to $recipient?",
+      message = "Confirmation required: Send message to $displayName: '$messageText'?",
+      spokenText = prompt,
+      requiresConfirmation = true,
+      confirmationPrompt = prompt,
+      pendingActionId = UUID.randomUUID().toString()
+    )
+  }
+
+  private fun executeSendEmail(recipient: String, subject: String?, body: String?): DvexToolResult {
+    val prompt = if (!subject.isNullOrBlank()) {
+      "Okay, Sir. Send email to $recipient about '$subject'?"
+    } else {
+      "Okay, Sir. Send email to $recipient?"
+    }
+    return DvexToolResult(
+      status = DvexToolStatus.CONFIRMATION_REQUIRED,
+      toolName = "send_email",
+      message = "Confirmation required: Send email to $recipient?",
       spokenText = prompt,
       requiresConfirmation = true,
       confirmationPrompt = prompt,
@@ -292,21 +387,32 @@ class DvexToolRouter(
   }
 
   // --- Live Information ---
-  private fun executeGetWeather(location: String?): DvexToolResult {
-    val loc = location?.ifBlank { "local area" } ?: "your area"
-    val report = "Current weather in $loc is 30°C and partly cloudy. High of 34°C, low of 26°C."
-    return DvexToolResult(
-      status = DvexToolStatus.SUCCESS,
-      toolName = "get_weather",
-      message = report,
-      spokenText = report
-    )
+  private suspend fun executeGetWeather(location: String?, isTomorrow: Boolean = false): DvexToolResult {
+    val targetCity = location?.ifBlank { "Chennai" } ?: "Chennai"
+    val liveWeather = realTimeWeb.fetchRealWeather(targetCity, isTomorrow)
+
+    return if (!liveWeather.isNullOrBlank()) {
+      DvexToolResult(
+        status = DvexToolStatus.SUCCESS,
+        toolName = "get_weather",
+        message = liveWeather,
+        spokenText = liveWeather
+      )
+    } else {
+      val msg = "I couldn't fetch live weather for $targetCity right now, Sir. Please check your internet connection."
+      DvexToolResult(
+        status = DvexToolStatus.FAILED,
+        toolName = "get_weather",
+        message = msg,
+        spokenText = msg
+      )
+    }
   }
 
   private fun executeGetTime(): DvexToolResult {
     val timeFormat = SimpleDateFormat("h:mm a", Locale.getDefault())
     val currentTime = timeFormat.format(Date())
-    val spoken = "The time is $currentTime."
+    val spoken = "The time is $currentTime, Sir."
     return DvexToolResult(
       status = DvexToolStatus.SUCCESS,
       toolName = "get_time",
@@ -318,7 +424,7 @@ class DvexToolRouter(
   private fun executeCalculate(expression: String): DvexToolResult {
     val result = evaluateArithmetic(expression)
     return if (result != null) {
-      val spoken = "$expression is $result."
+      val spoken = "$expression is $result, Sir."
       DvexToolResult(
         status = DvexToolStatus.SUCCESS,
         toolName = "calculate",
@@ -326,32 +432,45 @@ class DvexToolRouter(
         spokenText = spoken
       )
     } else {
+      val spoken = "I couldn't calculate that, Sir."
       DvexToolResult(
         status = DvexToolStatus.FAILED,
         toolName = "calculate",
         message = "Could not evaluate: $expression",
-        spokenText = "I couldn't calculate that."
+        spokenText = spoken
       )
     }
   }
 
   private fun executeGetNews(topic: String?): DvexToolResult {
-    val newsSummary = if (topic.isNullOrBlank()) {
-      "Here are top headlines: Global tech summit kicks off, space exploration advances, and renewable energy adoption rises."
-    } else {
-      "Latest on $topic: New developments reported across major global networks."
-    }
+    val q = if (!topic.isNullOrBlank()) "$topic news" else "latest news"
+    deviceControl.openBrowser(q)
+    val spoken = "Opening latest news headlines for you, Sir."
     return DvexToolResult(
       status = DvexToolStatus.SUCCESS,
       toolName = "get_news",
-      message = newsSummary,
-      spokenText = newsSummary
+      message = spoken,
+      spokenText = spoken
     )
   }
 
-  private fun executeSearchWeb(query: String): DvexToolResult {
+  private suspend fun executeSearchWeb(query: String): DvexToolResult {
+    // Check for instant factual answer
+    val webAnswer = realTimeWeb.fetchWebAnswer(query)
+    if (!webAnswer.isNullOrBlank()) {
+      val spoken = "$webAnswer, Sir."
+      return DvexToolResult(
+        status = DvexToolStatus.SUCCESS,
+        toolName = "search_web",
+        message = spoken,
+        spokenText = spoken
+      )
+    }
+
+    // Launch web search in browser
     val res = deviceControl.openBrowser(query)
-    return mapDeviceResult(res, "search_web", "Searching the web for $query.")
+    val spoken = "Here are the web search results for $query, Sir."
+    return mapDeviceResult(res, "search_web", spoken)
   }
 
   // --- Memory Operations ---
@@ -360,7 +479,7 @@ class DvexToolRouter(
     existing.add(fact)
     prefs.edit().putStringSet("core_memories", existing).apply()
 
-    val spoken = "I'll remember that: $fact."
+    val spoken = "Got it, Sir. I will remember that: $fact."
     return DvexToolResult(
       status = DvexToolStatus.SUCCESS,
       toolName = "remember_fact",
@@ -372,11 +491,12 @@ class DvexToolRouter(
   private fun executeRecallMemory(query: String?): DvexToolResult {
     val memories = getStoredMemories()
     if (memories.isEmpty()) {
+      val spoken = "You haven't asked me to remember anything yet, Sir."
       return DvexToolResult(
         status = DvexToolStatus.SUCCESS,
         toolName = "recall_memory",
-        message = "No memories stored in D-VEX core yet.",
-        spokenText = "You haven't asked me to remember anything yet."
+        message = "No memories stored in D-VEX yet, Sir.",
+        spokenText = spoken
       )
     }
 
@@ -388,9 +508,9 @@ class DvexToolRouter(
     }
 
     val response = if (matched != null) {
-      "According to your saved memories, $matched."
+      "According to what you told me, Sir: $matched."
     } else {
-      "You asked me to remember: ${memories.joinToString("; ")}."
+      "Here is what I remember, Sir: ${memories.joinToString("; ")}."
     }
 
     return DvexToolResult(
@@ -412,24 +532,24 @@ class DvexToolRouter(
     // Special optimization: YouTube + Search
     if (first is DvexIntent.OpenApp && first.appName.contains("youtube", ignoreCase = true) && second is DvexIntent.SearchWeb) {
       val res = deviceControl.openYouTube(second.query)
-      return mapDeviceResult(res, "youtube_search", "Opening YouTube and searching for ${second.query}.")
+      return mapDeviceResult(res, "youtube_search", "Sure, Sir. Opening YouTube and searching for ${second.query}.")
     }
 
     // Maps + Search
     if (first is DvexIntent.OpenApp && first.appName.contains("maps", ignoreCase = true) && second is DvexIntent.SearchWeb) {
       val res = deviceControl.openMaps(second.query)
-      return mapDeviceResult(res, "maps_search", "Opening Maps and searching for ${second.query}.")
+      return mapDeviceResult(res, "maps_search", "Sure, Sir. Opening Maps and searching for ${second.query}.")
     }
 
-    // General app + search: Launch app first. If search cannot be injected automatically, inform user honestly.
+    // General app + search: Launch app first.
     if (first is DvexIntent.OpenApp && second is DvexIntent.SearchWeb) {
       val appRes = appLauncher.launchAppByName(first.appName)
       return if (appRes.isSuccessful) {
         DvexToolResult(
           status = DvexToolStatus.SUCCESS,
           toolName = "multi_step",
-          message = "${first.appName} is open. I can't complete the search automatically yet.",
-          spokenText = "${first.appName} is open. I can't complete the search automatically yet.",
+          message = "Opening ${first.appName}, Sir.",
+          spokenText = "Opening ${first.appName}, Sir.",
           multiStepExecutedFirst = true,
           multiStepPendingSecond = second
         )
@@ -437,8 +557,8 @@ class DvexToolRouter(
         DvexToolResult(
           status = DvexToolStatus.NOT_FOUND,
           toolName = "multi_step",
-          message = "Could not find ${first.appName} to execute multi-step command.",
-          spokenText = "I couldn't find ${first.appName} on your phone."
+          message = "Could not find ${first.appName}, Sir.",
+          spokenText = "I couldn't find ${first.appName} on your phone, Sir."
         )
       }
     }
@@ -447,25 +567,38 @@ class DvexToolRouter(
     return DvexToolResult(
       status = DvexToolStatus.FAILED,
       toolName = "multi_step",
-      message = "Unsupported multi-step sequence.",
-      spokenText = "I can only complete one action at a time for this request."
+      message = "I can only complete one action at a time for this request, Sir.",
+      spokenText = "I can only complete one action at a time for this request, Sir."
     )
   }
 
   // --- General Knowledge & Conversation ---
-  private fun executeGeneralQuestion(question: String): DvexToolResult {
+  private suspend fun executeGeneralQuestion(question: String): DvexToolResult {
     val q = question.lowercase(Locale.ROOT)
+
+    // Check online web answer first for accurate information
+    val liveAns = realTimeWeb.fetchWebAnswer(question)
+    if (!liveAns.isNullOrBlank()) {
+      val text = "$liveAns, Sir."
+      return DvexToolResult(
+        status = DvexToolStatus.SUCCESS,
+        toolName = "general_qa",
+        message = text,
+        spokenText = text
+      )
+    }
+
     val answer = when {
       q.contains("photosynthesis") ->
-        "Photosynthesis is the process by which green plants and certain organisms use sunlight to synthesize nutrients from carbon dioxide and water, releasing oxygen as a byproduct."
+        "Photosynthesis is the process by which plants turn sunlight, water, and carbon dioxide into oxygen and energy, Sir."
       q.contains("joke") ->
-        "Why do programmers prefer dark mode? Because light attracts bugs."
+        "Why do programmers prefer dark mode? Because light attracts bugs, Sir."
       q.contains("plan my day") ->
-        "I recommend checking your high-priority communications first, setting 90-minute focus blocks, and taking tactical breaks between sessions."
+        "I recommend checking your high-priority tasks first, taking focused blocks, and staying hydrated, Sir."
       q.contains("moon") ->
-        "The Moon is approximately 384,400 kilometers from Earth."
+        "The Moon is approximately 384,400 kilometers from Earth, Sir."
       else ->
-        "I have analyzed your query. While my tactical network operates locally, I'm standing by to help manage your device, apps, and schedules."
+        "I'm right here with you, Sir. Let me know what you need."
     }
     return DvexToolResult(
       status = DvexToolStatus.SUCCESS,
@@ -479,13 +612,19 @@ class DvexToolRouter(
     val s = statement.lowercase(Locale.ROOT)
     val reply = when {
       s.contains("who are you") || s.contains("what are you") || s.contains("neenga yaaru") ->
-        "I am D-VEX, your tactical intelligence and device assistant."
+        "I am D-VEX, your personal AI assistant, Sir."
       s.contains("hello") || s.contains("hi") || s.contains("hey") ->
-        "Hello. D-VEX tactical systems are online and standing by."
+        "Hello, Sir! How can I help you today?"
       s.contains("vanakkam") || s.contains("வணக்கம்") ->
-        "Vanakkam! D-VEX systems are active and ready."
+        "Vanakkam, Sir! சொல்லுங்க, what can I do for you?"
+      s.contains("how are you") || s.contains("epdi irukka") || s.contains("eppadi irukkenga") ->
+        "I'm doing great and ready to help, Sir! How are you doing?"
+      s.contains("thank") || s.contains("nandri") ->
+        "You're very welcome, Sir!"
+      s.contains("bye") || s.contains("good night") || s.contains("see you") ->
+        "Goodbye, Sir. Let me know if you need anything later."
       else ->
-        "Understood. Systems are operating at nominal capacity."
+        "Got it, Sir. I'm standing by."
     }
     return DvexToolResult(
       status = DvexToolStatus.SUCCESS,

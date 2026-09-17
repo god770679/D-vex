@@ -3,6 +3,7 @@ package com.example.brain
 import android.content.Context
 import android.util.Log
 import com.example.control.AppLauncherRepository
+import com.example.control.ContactResolver
 import com.example.control.DeviceControlRepository
 import java.util.Locale
 
@@ -32,6 +33,7 @@ class DvexSmartBrain(
   private val conversationContext = ConversationContext()
   private val toolRouter = DvexToolRouter(context, appLauncher, deviceControl)
   private val responseGenerator = DvexResponseGenerator()
+  private val contactResolver = ContactResolver(context)
 
   // Track pending sensitive confirmation within the brain
   private var activePendingIntent: DvexIntent? = null
@@ -71,14 +73,14 @@ class DvexSmartBrain(
         val cancelResult = DvexToolResult(
           status = DvexToolStatus.SUCCESS,
           toolName = "cancellation",
-          message = "Action cancelled.",
-          spokenText = "Action cancelled."
+          message = "Action cancelled, Sir.",
+          spokenText = "Action cancelled, Sir."
         )
-        Log.i(TAG_RESPONSE, "Action cancelled.")
+        Log.i(TAG_RESPONSE, "Action cancelled, Sir.")
         return BrainExecutionResult(
           intent = DvexIntent.Conversation(rawInput),
           toolResult = cancelResult,
-          spokenText = "Action cancelled.",
+          spokenText = "Action cancelled, Sir.",
           toolName = "cancellation"
         )
       }
@@ -102,7 +104,7 @@ class DvexSmartBrain(
     // 4. Update Conversation Context
     conversationContext.update(rawInput, intent, toolResult, language)
 
-    // 5. Check if confirmation is required (Sensitive actions: Call, SMS)
+    // 5. Check if confirmation is required (Sensitive actions: Call, SMS, Email)
     if (toolResult.requiresConfirmation) {
       activePendingIntent = intent
       activePendingId = toolResult.pendingActionId
@@ -132,30 +134,50 @@ class DvexSmartBrain(
     return when (intent) {
       is DvexIntent.CallContact -> {
         Log.i(TAG_TOOL, "Executing confirmed phone call for: ${intent.recipient}")
-        val res = deviceControl.openPhoneDialer(intent.recipient)
+        val contact = contactResolver.resolveContact(intent.recipient)
+        val targetNumber = contact?.phoneNumber ?: intent.recipient
+        val displayName = contact?.name ?: intent.recipient
+        val res = deviceControl.makePhoneCall(targetNumber, displayName)
         DvexToolResult(
           status = if (res.isSuccessful) DvexToolStatus.SUCCESS else DvexToolStatus.FAILED,
           toolName = "phone_call",
-          message = "Calling ${intent.recipient}.",
-          spokenText = "Calling ${intent.recipient}."
+          message = "Calling $displayName, Sir.",
+          spokenText = "Calling $displayName, Sir."
         )
       }
       is DvexIntent.SendMessage -> {
         Log.i(TAG_TOOL, "Executing confirmed SMS for: ${intent.recipient}")
-        val res = deviceControl.openMessages(intent.recipient, intent.messageText)
+        val contact = contactResolver.resolveContact(intent.recipient)
+        val targetNumber = contact?.phoneNumber ?: intent.recipient
+        val displayName = contact?.name ?: intent.recipient
+        val res = if (!intent.messageText.isNullOrBlank() && contact?.phoneNumber != null) {
+          deviceControl.sendSms(targetNumber, intent.messageText, displayName)
+        } else {
+          deviceControl.openMessages(targetNumber, intent.messageText)
+        }
         DvexToolResult(
           status = if (res.isSuccessful) DvexToolStatus.SUCCESS else DvexToolStatus.FAILED,
           toolName = "send_message",
-          message = "Opening message composer for ${intent.recipient}.",
-          spokenText = "Opening message composer for ${intent.recipient}."
+          message = "Sending message to $displayName, Sir.",
+          spokenText = "Sending message to $displayName, Sir."
+        )
+      }
+      is DvexIntent.SendEmail -> {
+        Log.i(TAG_TOOL, "Executing confirmed email for: ${intent.recipient}")
+        val res = deviceControl.sendEmail(intent.recipient, intent.subject, intent.body)
+        DvexToolResult(
+          status = if (res.isSuccessful) DvexToolStatus.SUCCESS else DvexToolStatus.FAILED,
+          toolName = "send_email",
+          message = "Opening email to ${intent.recipient}, Sir.",
+          spokenText = "Opening email to ${intent.recipient}, Sir."
         )
       }
       else -> {
         DvexToolResult(
           status = DvexToolStatus.FAILED,
           toolName = "unknown",
-          message = "Unknown confirmation action.",
-          spokenText = "I couldn't complete that."
+          message = "Unknown confirmation action, Sir.",
+          spokenText = "I couldn't complete that action, Sir."
         )
       }
     }
@@ -167,14 +189,22 @@ class DvexSmartBrain(
   }
 
   private fun isAffirmative(lower: String): Boolean {
-    return lower == "yes" || lower == "confirm" || lower == "call" ||
-        lower == "send" || lower == "sure" || lower == "do it" ||
-        lower == "yeah" || lower == "yep" || lower == "aama" || lower == "seri"
+    val clean = lower.trimEnd('.', '?', '!', ',')
+    return clean == "yes" || clean == "confirm" || clean == "call" ||
+        clean == "send" || clean == "sure" || clean == "do it" ||
+        clean == "yeah" || clean == "yep" || clean == "aama" || clean == "seri" ||
+        clean == "sari" || clean == "pannu" || clean == "pannunga" || clean == "anupu" ||
+        clean == "anuppu" || clean == "ok" || clean == "okay" || clean == "yes sir" ||
+        clean == "sure sir" || clean == "okay sir" || clean == "சரி" || clean == "பண்ணு" ||
+        clean == "அனுப்பு" || clean == "ஆம்" || clean.contains("yes") || clean.contains("confirm")
   }
 
   private fun isNegative(lower: String): Boolean {
-    return lower == "no" || lower == "cancel" || lower == "stop" ||
-        lower == "don't" || lower == "nevermind" || lower == "vendaam" || lower == "illai"
+    val clean = lower.trimEnd('.', '?', '!', ',')
+    return clean == "no" || clean == "cancel" || clean == "stop" ||
+        clean == "don't" || clean == "nevermind" || clean == "vendaam" || clean == "vendam" ||
+        clean == "illai" || clean == "வேண்டாம்" || clean == "இல்லை" || clean == "நிறுத்து" ||
+        clean.contains("cancel") || clean.contains("stop")
   }
 
   fun resetContext() {

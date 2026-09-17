@@ -22,13 +22,22 @@ sealed class DvexIntent {
   // --- Communication (Sensitive Actions) ---
   data class CallContact(val recipient: String) : DvexIntent()
   data class SendMessage(val recipient: String, val messageText: String? = null) : DvexIntent()
+  data class SendEmail(val recipient: String, val subject: String? = null, val body: String? = null) : DvexIntent()
+
+  // --- Device Hardware Controls ---
+  data class ToggleFlashlight(val enable: Boolean? = null) : DvexIntent()
+  data class SetAlarm(val hour: Int, val minute: Int, val message: String? = null) : DvexIntent()
+  data class SetTimer(val seconds: Int, val message: String? = null) : DvexIntent()
 
   // --- Live Information & Utility ---
   data class SearchWeb(val query: String) : DvexIntent()
-  data class GetWeather(val location: String? = null) : DvexIntent()
+  data class GetWeather(val location: String? = null, val isTomorrow: Boolean = false) : DvexIntent()
   data class GetNews(val topic: String? = null) : DvexIntent()
   object GetTime : DvexIntent()
   data class Calculate(val expression: String) : DvexIntent()
+
+  // --- Wake / Greeting ---
+  object WakeGreeting : DvexIntent()
 
   // --- Media & Volume ---
   data class AdjustVolume(val direction: VolumeAction) : DvexIntent()

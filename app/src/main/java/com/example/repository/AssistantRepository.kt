@@ -744,13 +744,24 @@ class AssistantRepository private constructor(private val context: Context) {
     if (_settings.value.voiceResponseEnabled) {
       val langCode = language?.name?.lowercase(Locale.ROOT)
       ttsManager.speak(text, langCode) {
-        Log.i(TAG_VOICE, "TTS finished; returning to standby")
-        returnToRestState()
+        Log.i(TAG_VOICE, "TTS finished; checking confirmation or returning to rest")
+        if (_pendingConfirmation.value != null) {
+          scope.launch {
+            delay(150)
+            startListeningForCommand()
+          }
+        } else {
+          returnToRestState()
+        }
       }
     } else {
       scope.launch {
         delay(2200)
-        returnToRestState()
+        if (_pendingConfirmation.value != null) {
+          startListeningForCommand()
+        } else {
+          returnToRestState()
+        }
       }
     }
   }

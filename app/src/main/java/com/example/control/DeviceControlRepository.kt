@@ -1,14 +1,19 @@
 package com.example.control
 
+import android.Manifest
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.hardware.camera2.CameraManager
 import android.media.AudioManager
 import android.net.Uri
 import android.os.Build
+import android.provider.AlarmClock
 import android.provider.MediaStore
 import android.provider.Settings
 import android.util.Log
 import android.view.KeyEvent
+import androidx.core.content.ContextCompat
 import com.example.data.remote.MediaCommand
 import com.example.data.remote.ToolExecutionResult
 import com.example.data.remote.ToolResultStatus
@@ -24,6 +29,8 @@ class DeviceControlRepository(
 ) {
 
   private val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
+  private val cameraManager = context.getSystemService(Context.CAMERA_SERVICE) as? CameraManager
+  private var isTorchOn = false
 
   fun openCamera(): ToolExecutionResult {
     return try {
@@ -154,9 +161,41 @@ class DeviceControlRepository(
     }
   }
 
-  fun openMessages(recipient: String? = null, body: String? = null): ToolExecutionResult {
+  fun makePhoneCall(phoneNumber: String, contactName: String? = null): ToolExecutionResult {
+    val cleanNumber = phoneNumber.replace(Regex("[^0-9+]"), "")
+    if (cleanNumber.isBlank()) {
+      return ToolExecutionResult(ToolResultStatus.FAILED, "call", "Invalid phone number.")
+    }
+    val displayName = contactName ?: phoneNumber
     return try {
-      val uri = if (!recipient.isNullOrBlank()) Uri.parse("smsto:${Uri.encode(recipient)}") else Uri.parse("smsto:")
+      val hasCallPermission = ContextCompat.checkSelfPermission(
+        context,
+        Manifest.permission.CALL_PHONE
+      ) == PackageManager.PERMISSION_GRANTED
+
+      if (hasCallPermission) {
+        val intent = Intent(Intent.ACTION_CALL, Uri.parse("tel:$cleanNumber")).apply {
+          addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        context.startActivity(intent)
+        ToolExecutionResult(ToolResultStatus.SUCCESS, "call", "Calling $displayName.")
+      } else {
+        val intent = Intent(Intent.ACTION_DIAL, Uri.parse("tel:$cleanNumber")).apply {
+          addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        context.startActivity(intent)
+        ToolExecutionResult(ToolResultStatus.SUCCESS, "call", "Opening dialer for $displayName.")
+      }
+    } catch (e: Exception) {
+      Log.e(TAG, "Call execution failed", e)
+      ToolExecutionResult(ToolResultStatus.FAILED, "call", "Unable to place call to $displayName.")
+    }
+  }
+
+  fun sendSms(phoneNumber: String, body: String? = null, contactName: String? = null): ToolExecutionResult {
+    val displayName = contactName ?: phoneNumber
+    return try {
+      val uri = Uri.parse("smsto:${Uri.encode(phoneNumber)}")
       val intent = Intent(Intent.ACTION_SENDTO, uri).apply {
         if (!body.isNullOrBlank()) {
           putExtra("sms_body", body)
@@ -164,14 +203,90 @@ class DeviceControlRepository(
         addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
       }
       context.startActivity(intent)
-      ToolExecutionResult(
-        ToolResultStatus.SUCCESS,
-        "messages",
-        if (!recipient.isNullOrBlank()) "Opening messaging composer for $recipient." else "Opening messaging app."
-      )
+      ToolExecutionResult(ToolResultStatus.SUCCESS, "send_sms", "Opening SMS composer for $displayName.")
     } catch (e: Exception) {
-      Log.e(TAG, "Messages failed", e)
-      ToolExecutionResult(ToolResultStatus.FAILED, "messages", "Unable to open messaging app.")
+      Log.e(TAG, "SMS sending failed", e)
+      ToolExecutionResult(ToolResultStatus.FAILED, "send_sms", "Unable to send message to $displayName.")
+    }
+  }
+
+  fun openMessages(target: String? = null, body: String? = null): ToolExecutionResult {
+    return sendSms(target ?: "", body, null)
+  }
+
+  fun sendEmail(recipient: String, subject: String? = null, body: String? = null): ToolExecutionResult {
+    return try {
+      val uri = Uri.parse("mailto:${Uri.encode(recipient)}")
+      val intent = Intent(Intent.ACTION_SENDTO, uri).apply {
+        if (!subject.isNullOrBlank()) {
+          putExtra(Intent.EXTRA_SUBJECT, subject)
+        }
+        if (!body.isNullOrBlank()) {
+          putExtra(Intent.EXTRA_TEXT, body)
+        }
+        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+      }
+      context.startActivity(intent)
+      ToolExecutionResult(ToolResultStatus.SUCCESS, "send_email", "Opening email composer for $recipient.")
+    } catch (e: Exception) {
+      Log.e(TAG, "Email intent failed", e)
+      ToolExecutionResult(ToolResultStatus.FAILED, "send_email", "Unable to open email client.")
+    }
+  }
+
+  fun toggleFlashlight(enable: Boolean? = null): ToolExecutionResult {
+    val cm = cameraManager ?: return ToolExecutionResult(ToolResultStatus.FAILED, "flashlight", "Camera hardware unavailable.")
+    return try {
+      val cameraId = cm.cameraIdList.firstOrNull() ?: return ToolExecutionResult(ToolResultStatus.FAILED, "flashlight", "No flashlight found.")
+      val targetState = enable ?: !isTorchOn
+      cm.setTorchMode(cameraId, targetState)
+      isTorchOn = targetState
+      val stateText = if (targetState) "Flashlight turned on." else "Flashlight turned off."
+      ToolExecutionResult(ToolResultStatus.SUCCESS, "flashlight", stateText)
+    } catch (e: Exception) {
+      Log.e(TAG, "Flashlight toggle failed", e)
+      ToolExecutionResult(ToolResultStatus.FAILED, "flashlight", "Unable to toggle flashlight.")
+    }
+  }
+
+  fun setAlarm(hour: Int, minute: Int, message: String? = null): ToolExecutionResult {
+    return try {
+      val intent = Intent(AlarmClock.ACTION_SET_ALARM).apply {
+        putExtra(AlarmClock.EXTRA_HOUR, hour)
+        putExtra(AlarmClock.EXTRA_MINUTES, minute)
+        putExtra(AlarmClock.EXTRA_SKIP_UI, false)
+        if (!message.isNullOrBlank()) {
+          putExtra(AlarmClock.EXTRA_MESSAGE, message)
+        }
+        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+      }
+      context.startActivity(intent)
+      val timeStr = String.format("%02d:%02d", hour, minute)
+      ToolExecutionResult(ToolResultStatus.SUCCESS, "set_alarm", "Alarm set for $timeStr.")
+    } catch (e: Exception) {
+      Log.e(TAG, "Setting alarm failed", e)
+      ToolExecutionResult(ToolResultStatus.FAILED, "set_alarm", "Unable to set alarm.")
+    }
+  }
+
+  fun setTimer(seconds: Int, message: String? = null): ToolExecutionResult {
+    return try {
+      val intent = Intent(AlarmClock.ACTION_SET_TIMER).apply {
+        putExtra(AlarmClock.EXTRA_LENGTH, seconds)
+        putExtra(AlarmClock.EXTRA_SKIP_UI, false)
+        if (!message.isNullOrBlank()) {
+          putExtra(AlarmClock.EXTRA_MESSAGE, message)
+        }
+        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+      }
+      context.startActivity(intent)
+      val min = seconds / 60
+      val sec = seconds % 60
+      val label = if (min > 0 && sec > 0) "$min minutes $sec seconds" else if (min > 0) "$min minutes" else "$sec seconds"
+      ToolExecutionResult(ToolResultStatus.SUCCESS, "set_timer", "Timer set for $label.")
+    } catch (e: Exception) {
+      Log.e(TAG, "Setting timer failed", e)
+      ToolExecutionResult(ToolResultStatus.FAILED, "set_timer", "Unable to set timer.")
     }
   }
 
