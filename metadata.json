@@ -1,6 +1,0 @@
-{
-  "name": "D-VEX",
-  "description": "Tactical futuristic personal AI command center HUD",
-  "requestFramePermissions": [],
-  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
-}
