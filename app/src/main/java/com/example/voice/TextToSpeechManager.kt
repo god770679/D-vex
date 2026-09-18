@@ -137,13 +137,19 @@ class TextToSpeechManager(private val context: Context) {
   ) {
     try {
       if (isTamil) {
-        val tamilLocale = Locale.forLanguageTag("ta-IN")
-        val langResult = engine.setLanguage(tamilLocale)
-        val isLangAvailable = langResult != TextToSpeech.LANG_MISSING_DATA && langResult != TextToSpeech.LANG_NOT_SUPPORTED
+        val tamilLocales = listOf(Locale("ta", "IN"), Locale.forLanguageTag("ta-IN"), Locale("ta"))
+        var langSupported = false
+        for (loc in tamilLocales) {
+          val langResult = engine.setLanguage(loc)
+          if (langResult != TextToSpeech.LANG_MISSING_DATA && langResult != TextToSpeech.LANG_NOT_SUPPORTED) {
+            langSupported = true
+            break
+          }
+        }
 
-        if (isLangAvailable) {
+        if (langSupported) {
           // Calmer, measured intonation for Tamil:
-          // Pitch: 0.98f (natural, warm pitch; prevents eerie/sharp robotic tone)
+          // Pitch: 0.98f (natural, warm pitch; prevents sharp robotic tone)
           // Speech rate: 0.93f (deliberate cadence allowing full phonetic articulation)
           engine.setPitch(0.98f)
           engine.setSpeechRate(0.93f)
@@ -160,6 +166,10 @@ class TextToSpeechManager(private val context: Context) {
           engine.setLanguage(Locale.forLanguageTag("en-IN"))
           engine.setPitch(1.0f)
           engine.setSpeechRate(0.95f)
+          val bestVoice = selectBestVoice(engine, Locale.forLanguageTag("en-IN"))
+          if (bestVoice != null) {
+            engine.voice = bestVoice
+          }
         }
       } else {
         val langResult = engine.setLanguage(targetLocale)
@@ -227,6 +237,7 @@ class TextToSpeechManager(private val context: Context) {
 
   /**
    * Selects the highest quality natural conversational voice for non-Tamil locales.
+   * When target is Indian English (en-IN), strictly prioritizes en-IN voices over US/UK.
    */
   private fun selectBestVoice(engine: TextToSpeech, targetLocale: Locale): Voice? {
     val availableVoices = try {
@@ -236,6 +247,9 @@ class TextToSpeechManager(private val context: Context) {
     } ?: return null
 
     val targetLang = targetLocale.language.lowercase(Locale.ROOT)
+    val targetCountry = targetLocale.country.lowercase(Locale.ROOT)
+    val isIndianEnglish = targetCountry == "in" || targetLocale.toLanguageTag().lowercase(Locale.ROOT).contains("in")
+
     val matchingVoices = availableVoices.filter { voice ->
       voice.locale.language.lowercase(Locale.ROOT) == targetLang
     }
@@ -244,9 +258,25 @@ class TextToSpeechManager(private val context: Context) {
     return matchingVoices.maxByOrNull { voice ->
       var score = 0
       val name = voice.name.lowercase(Locale.ROOT)
+      val country = voice.locale.country.lowercase(Locale.ROOT)
+      val tag = voice.locale.toLanguageTag().lowercase(Locale.ROOT)
+
       score += voice.quality * 2
+
+      if (isIndianEnglish) {
+        if (country == "in" || tag.contains("in") || name.contains("en-in") || name.contains("ind")) {
+          score += 2000
+        } else {
+          score -= 1000
+        }
+      } else {
+        if (country == "us" || tag.contains("us") || name.contains("en-us")) {
+          score += 500
+        }
+      }
+
       if (name.contains("female") || name.contains("fem") || name.contains("f0") ||
-          name.contains("en-in-x-dfg") || name.contains("en-us-x-sfg")) {
+          name.contains("en-in-x-dfg") || name.contains("en-in-x-cxx") || name.contains("en-us-x-sfg")) {
         score += 500
       }
       if (!voice.isNetworkConnectionRequired || name.contains("local")) {
@@ -264,12 +294,14 @@ class TextToSpeechManager(private val context: Context) {
    */
   fun isTamilQualityAcceptable(): Boolean {
     val engine = tts ?: return false
-    val tamilLocale = Locale.forLanguageTag("ta-IN")
-    val status = try {
-      engine.isLanguageAvailable(tamilLocale)
-    } catch (e: Exception) {
-      TextToSpeech.LANG_NOT_SUPPORTED
-    }
+    val localesToCheck = listOf(Locale("ta", "IN"), Locale.forLanguageTag("ta-IN"), Locale("ta"))
+    val status = localesToCheck.maxOfOrNull { loc ->
+      try {
+        engine.isLanguageAvailable(loc)
+      } catch (e: Exception) {
+        TextToSpeech.LANG_NOT_SUPPORTED
+      }
+    } ?: TextToSpeech.LANG_NOT_SUPPORTED
 
     if (status == TextToSpeech.LANG_NOT_SUPPORTED || status == TextToSpeech.LANG_MISSING_DATA) {
       return false
@@ -287,7 +319,7 @@ class TextToSpeechManager(private val context: Context) {
       lang == "ta" || tag.startsWith("ta")
     }
 
-    if (tamilVoices != null && tamilVoices.isNotEmpty()) {
+    if (!tamilVoices.isNullOrEmpty()) {
       // Must have at least one voice that is installed and not missing data
       return tamilVoices.any { !it.features.contains(TextToSpeech.Engine.KEY_FEATURE_NOT_INSTALLED) }
     }
@@ -319,6 +351,10 @@ class TextToSpeechManager(private val context: Context) {
           "tamil", "ta", "ta-in" -> true
           else -> false
         }
+        val isExplicitTanglish = languageCode != null && when (languageCode.lowercase(Locale.ROOT)) {
+          "tanglish", "en-in" -> true
+          else -> false
+        }
 
         val treatAsTamil = containsTamil || isExplicitTamil
 
@@ -338,6 +374,11 @@ class TextToSpeechManager(private val context: Context) {
             val textToSpeak = sanitizeTextForSpeech(tanglishText)
             speakUtterance(engine, textToSpeak)
           }
+        } else if (isExplicitTanglish) {
+          // Explicit Tanglish spoken with Indian English voice for natural phonetics
+          setupVoiceAndLanguage(engine, Locale.forLanguageTag("en-IN"), isTamil = false)
+          val textToSpeak = sanitizeTextForSpeech(text)
+          speakUtterance(engine, textToSpeak)
         } else {
           val locale = when (languageCode?.lowercase(Locale.ROOT)) {
             "tanglish", "en-in" -> Locale.forLanguageTag("en-IN")

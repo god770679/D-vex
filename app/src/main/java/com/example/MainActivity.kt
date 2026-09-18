@@ -11,6 +11,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -58,6 +59,27 @@ class MainActivity : ComponentActivity() {
         val notifPermissionLauncher = rememberLauncherForActivityResult(
           ActivityResultContracts.RequestPermission()
         ) { _ -> }
+
+        // Runtime permission launcher for Communication (Call, SMS, Contacts)
+        val commsPermissionLauncher = rememberLauncherForActivityResult(
+          ActivityResultContracts.RequestMultiplePermissions()
+        ) { _ -> }
+
+        LaunchedEffect(Unit) {
+          val needed = mutableListOf<String>()
+          if (!DvexPermissionManager.hasContactsPermission(this@MainActivity)) {
+            needed.add(Manifest.permission.READ_CONTACTS)
+          }
+          if (!DvexPermissionManager.hasCallPhonePermission(this@MainActivity)) {
+            needed.add(Manifest.permission.CALL_PHONE)
+          }
+          if (!DvexPermissionManager.hasSmsPermission(this@MainActivity)) {
+            needed.add(Manifest.permission.SEND_SMS)
+          }
+          if (needed.isNotEmpty()) {
+            commsPermissionLauncher.launch(needed.toTypedArray())
+          }
+        }
 
         DvexHud(
           uiState = uiState,

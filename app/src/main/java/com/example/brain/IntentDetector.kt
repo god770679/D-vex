@@ -20,9 +20,20 @@ class IntentDetector {
    * Main parsing entry point.
    */
   fun detectIntent(rawInput: String, context: ConversationContext? = null): DetectionResult {
-    val language = detectLanguage(rawInput)
+    var language = detectLanguage(rawInput)
     val cleanText = sanitizeWakePhraseAndFillers(rawInput)
     val lower = cleanText.lowercase(Locale.ROOT).trim()
+
+    // Context language continuity: If user was previously interacting in Tamil or Tanglish,
+    // and this turn is language-neutral, maintain their chosen language rather than reverting to English.
+    if (context != null && language == DetectedLanguage.ENGLISH) {
+      val prevLang = context.lastLanguage
+      if (prevLang == DetectedLanguage.TAMIL || prevLang == DetectedLanguage.TANGLISH) {
+        if (isLanguageNeutral(cleanText)) {
+          language = prevLang
+        }
+      }
+    }
 
     Log.d(TAG, "Input: \"$rawInput\" -> Cleaned: \"$cleanText\" (Lang: $language)")
 
@@ -39,8 +50,8 @@ class IntentDetector {
 
     // Wake word greeting as standalone utterance
     if (lower == "d-vex" || lower == "dvex" || lower == "d vex" || lower == "hey d-vex" ||
-        lower == "hey dvex" || lower == "hey d vex" || lower == "dee vex" ||
-        lower == "டி-வெக்ஸ்" || lower == "டிவெக்ஸ்" || lower == "டீவெக்ஸ்") {
+        lower == "hey dvex" || lower == "hey d vex" || lower == "dee vex" || lower == "devex" ||
+        lower == "hey devex" || lower == "டி-வெக்ஸ்" || lower == "டிவெக்ஸ்" || lower == "டீவெக்ஸ்") {
       return DetectionResult(DvexIntent.WakeGreeting, 1.0f, language, rawInput)
     }
 
@@ -227,6 +238,8 @@ class IntentDetector {
         lower.startsWith("dial ") ||
         lower.contains("call pannu") ||
         lower.contains("call pannunga") ||
+        lower.contains("கால் பண்ணு") ||
+        lower.contains("போன் பண்ணு") ||
         lower == "call" ||
         lower.startsWith("make a call to ") ||
         lower.startsWith("phone ")
@@ -239,6 +252,8 @@ class IntentDetector {
         .replace(Regex("^(can you please |can you |please )?phone", RegexOption.IGNORE_CASE), "")
         .replace("call pannu", "", ignoreCase = true)
         .replace("call pannunga", "", ignoreCase = true)
+        .replace("கால் பண்ணு", "")
+        .replace("போன் பண்ணு", "")
         .replace("ku call", "", ignoreCase = true)
         .trim()
       while (recipient.endsWith(".") || recipient.endsWith("?") || recipient.endsWith("!")) {
@@ -247,30 +262,23 @@ class IntentDetector {
       return DvexIntent.CallContact(recipient.ifBlank { "contact" })
     }
 
-    // Message commands
-    val isMessage = lower.startsWith("send message to ") ||
-        lower.startsWith("send message ") ||
-        lower.startsWith("message ") ||
-        lower.startsWith("send a text to ") ||
-        lower.startsWith("text ") ||
-        lower.contains("message anupu") ||
-        lower.contains("message anuppu") ||
-        lower.contains("sms anupu") ||
-        lower.contains("sms anuppu")
+    // WhatsApp commands
+    val isWhatsApp = lower.contains("whatsapp") && (
+        lower.contains("message") || lower.contains("anuppu") || lower.contains("anupu") ||
+        lower.contains("pannu") || lower.startsWith("send") || lower.startsWith("whatsapp")
+    )
 
-    if (isMessage) {
+    if (isWhatsApp) {
       var target = rawText
-        .replace(Regex("^(can you please |can you |please )?send message to", RegexOption.IGNORE_CASE), "")
-        .replace(Regex("^(can you please |can you |please )?send message", RegexOption.IGNORE_CASE), "")
-        .replace(Regex("^(can you please |can you |please )?message", RegexOption.IGNORE_CASE), "")
-        .replace(Regex("^(can you please |can you |please )?send a text to", RegexOption.IGNORE_CASE), "")
-        .replace(Regex("^(can you please |can you |please )?text", RegexOption.IGNORE_CASE), "")
-        .replace("message anupu", "", ignoreCase = true)
-        .replace("message anuppu", "", ignoreCase = true)
-        .replace("sms anupu", "", ignoreCase = true)
-        .replace("sms anuppu", "", ignoreCase = true)
+        .replace(Regex("^(can you please |can you |please )?send whatsapp( message)?( to)?", RegexOption.IGNORE_CASE), "")
+        .replace(Regex("^(can you please |can you |please )?whatsapp( message)?", RegexOption.IGNORE_CASE), "")
+        .replace("whatsapp message anuppu", "", ignoreCase = true)
+        .replace("whatsapp message anupu", "", ignoreCase = true)
+        .replace("whatsapp anuppu", "", ignoreCase = true)
+        .replace("whatsapp anupu", "", ignoreCase = true)
+        .replace("whatsapp pannu", "", ignoreCase = true)
+        .replace("whatsapp", "", ignoreCase = true)
         .replace("ku message", "", ignoreCase = true)
-        .replace("ku sms", "", ignoreCase = true)
         .trim()
 
       var body: String? = null
@@ -282,8 +290,75 @@ class IntentDetector {
 
       val cleanTarget = target.trimEnd('.', '?', '!', ' ')
       val cleanBody = body?.trimEnd('.', '?', '!', ' ')
+      return DvexIntent.SendMessage(cleanTarget.ifBlank { "recipient" }, cleanBody, isWhatsApp = true)
+    }
+
+    // Message & Reply commands
+    val isMessage = lower.startsWith("send message to ") ||
+        lower.startsWith("send message ") ||
+        lower.startsWith("message ") ||
+        lower.startsWith("send a text to ") ||
+        lower.startsWith("text ") ||
+        lower.contains("reply pannu") ||
+        lower.contains("reply பண்ணு") ||
+        lower.contains("reply ") ||
+        lower.startsWith("reply to ") ||
+        lower.contains("message anupu") ||
+        lower.contains("message anuppu") ||
+        lower.contains("sms anupu") ||
+        lower.contains("sms anuppu") ||
+        lower.contains("மெசேஜ் அனுப்பு") ||
+        lower.contains("செய்தி அனுப்பு")
+
+    if (isMessage) {
+      var target = rawText
+        .replace(Regex("^(can you please |can you |please )?send message to", RegexOption.IGNORE_CASE), "")
+        .replace(Regex("^(can you please |can you |please )?send message", RegexOption.IGNORE_CASE), "")
+        .replace(Regex("^(can you please |can you |please )?message", RegexOption.IGNORE_CASE), "")
+        .replace(Regex("^(can you please |can you |please )?send a text to", RegexOption.IGNORE_CASE), "")
+        .replace(Regex("^(can you please |can you |please )?text", RegexOption.IGNORE_CASE), "")
+        .replace(Regex("^(can you please |can you |please )?reply to", RegexOption.IGNORE_CASE), "")
+        .replace("reply pannu", "", ignoreCase = true)
+        .replace("reply பண்ணு", "")
+        .replace("message anupu", "", ignoreCase = true)
+        .replace("message anuppu", "", ignoreCase = true)
+        .replace("sms anupu", "", ignoreCase = true)
+        .replace("sms anuppu", "", ignoreCase = true)
+        .replace("மெசேஜ் அனுப்பு", "")
+        .replace("செய்தி அனுப்பு", "")
+        .replace("ku message", "", ignoreCase = true)
+        .replace("ku sms", "", ignoreCase = true)
+        .replace("ku reply", "", ignoreCase = true)
+        .trim()
+
+      var body: String? = null
+      if (target.contains(" saying ", ignoreCase = true)) {
+        val parts = target.split(Regex(" saying ", RegexOption.IGNORE_CASE), limit = 2)
+        target = parts[0].trim()
+        body = parts[1].trim()
+      } else if (target.contains(" — ")) {
+        val parts = target.split(" — ", limit = 2)
+        target = parts[0].trim()
+        body = parts[1].trim()
+      } else if (target.contains(" - ")) {
+        val parts = target.split(" - ", limit = 2)
+        target = parts[0].trim()
+        body = parts[1].trim()
+      } else if (target.contains(" : ")) {
+        val parts = target.split(" : ", limit = 2)
+        target = parts[0].trim()
+        body = parts[1].trim()
+      } else if (target.contains(": ")) {
+        val parts = target.split(": ", limit = 2)
+        target = parts[0].trim()
+        body = parts[1].trim()
+      }
+
+      val cleanTarget = target.trimEnd('.', '?', '!', ' ')
+      val cleanBody = body?.trimEnd('.', '?', '!', ' ')
       return DvexIntent.SendMessage(cleanTarget.ifBlank { "recipient" }, cleanBody)
     }
+
 
     return null
   }
@@ -634,25 +709,62 @@ class IntentDetector {
       }
     }
 
-    // Check Tanglish phonetic cues
+    // Check Tanglish phonetic cues and vocabulary
     val lower = text.lowercase(Locale.ROOT)
-    val tanglishKeywords = listOf(
-      "pannu", "pannunga", "pora", "po", "kaattu", "enna",
-      "veiy", "vanakkam", "thora", "solla", "epdi", "irukku", "poidu", "anupu"
+    val tanglishKeywords = setOf(
+      "pannu", "pannunga", "panniten", "panren", "pora", "po", "kaattu", "enna",
+      "veiy", "vai", "vainga", "vanakkam", "vanakam", "thora", "solla", "sollu",
+      "sollunga", "solunga", "epdi", "eppadi", "epadi", "irukku", "irukken", "irukkeenga",
+      "poidu", "anupu", "anuppu", "anupunga", "kodu", "podu", "podunga", "nandri", "romba",
+      "mudiyuma", "mudiyala", "mudiyum", "paaru", "parunga", "vaanga", "ponga", "theriyala",
+      "theriyum", "enga", "inge", "ange", "yaaru", "edhu", "yen", "eppo", "pesu", "pesunga",
+      "kelu", "kelunga", "pathu", "aama", "seri", "sari", "illa", "illai", "vendaam",
+      "vendam", "adhu", "idhu", "kooda", "mela", "keela", "munnadi", "pinnaadi", "neram",
+      "mani", "seiy", "seiya", "seiyunga", "seiren", "thambi", "dvex", "devex", "keka",
+      "kekuthu", "bathil", "solren", "konjam", "valkai", "approm", "ippo", "ippove"
     )
-    val words = lower.split(Regex("\\s+"))
+
+    val words = lower.split(Regex("[^a-zA-Z0-9]+")).filter { it.isNotBlank() }
     if (words.any { it in tanglishKeywords }) {
       return DetectedLanguage.TANGLISH
     }
 
+    // Check common Tanglish phonetic suffixes
+    for (word in words) {
+      if (word.length >= 4) {
+        if (word.endsWith("unga") || word.endsWith("aachu") || word.endsWith("iten") ||
+            word.endsWith("ren") || word.endsWith("panren") || word.endsWith("poren")) {
+          return DetectedLanguage.TANGLISH
+        }
+      }
+    }
+
     return DetectedLanguage.ENGLISH
+  }
+
+  private fun isLanguageNeutral(text: String): Boolean {
+    val lower = text.lowercase(Locale.ROOT).trim()
+    val neutralPhrases = setOf(
+      "yes", "no", "ok", "okay", "sure", "cancel", "stop", "confirm", "proceed",
+      "open camera", "open youtube", "open chrome", "open whatsapp", "open settings",
+      "flashlight on", "flashlight off", "1", "2", "3", "4", "5"
+    )
+    if (lower in neutralPhrases) return true
+
+    val englishGrammarWords = setOf(
+      "the", "is", "are", "were", "what", "which", "where", "how", "why", "who",
+      "please", "could", "would", "should", "tell", "show", "give", "find"
+    )
+    val tokens = lower.split(Regex("\\s+"))
+    return tokens.none { it in englishGrammarWords }
   }
 
   // --- Sanitize Wake Phrase and Noise ---
   private fun sanitizeWakePhraseAndFillers(rawInput: String): String {
     var cleaned = rawInput.trim()
     val prefixes = listOf(
-      "hey d-vex", "hey dvex", "d-vex", "dvex", "dee vex",
+      "hey d-vex", "hey dvex", "hey d vex", "hey devex", "hey dee vex",
+      "d-vex", "dvex", "d vex", "dee vex", "devex",
       "டி-வெக்ஸ்", "டிவெக்ஸ்", "டீவெக்ஸ்"
     )
     val lower = cleaned.lowercase(Locale.ROOT)
