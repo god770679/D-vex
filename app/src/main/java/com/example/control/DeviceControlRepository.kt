@@ -179,7 +179,7 @@ class DeviceControlRepository(
           addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         }
         context.startActivity(intent)
-        ToolExecutionResult(ToolResultStatus.SUCCESS, "call", "Calling $displayName, Sir.")
+        ToolExecutionResult(ToolResultStatus.SUCCESS, "call", "Okay Sir. Calling $displayName.")
       } else {
         ToolExecutionResult(
           ToolResultStatus.NEEDS_PERMISSION,

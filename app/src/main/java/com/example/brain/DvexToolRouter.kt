@@ -944,9 +944,19 @@ class DvexToolRouter(
       s.contains("vanakkam") || s.contains("வணக்கம்") ->
         "வணக்கம், Sir! சொல்லுங்க, என்ன பண்ணனும்?"
 
-      s.contains("how are you") || s.contains("epdi irukka") || s.contains("eppadi irukkenga") ->
-        if (isTamilScript || isTanglish) "நான் நல்லா இருக்கேன், Sir! நீங்க எப்படி இருக்கீங்க?"
+      s.contains("how are you") || s.contains("epdi irukka") || s.contains("eppadi irukkenga") ||
+          s.contains("eppadi irukinga") || s.contains("eppadi irukeenga") || s.contains("epdi irukinga") ->
+        if (isTamilScript) "நான் நல்லா இருக்கேன், Sir! நீங்க எப்படி இருக்கீங்க?"
+        else if (isTanglish) "Naan nalla irukken, Sir! Neenga eppadi irukinga?"
         else "I'm doing great, Sir! How are you doing?"
+
+      s.contains("what can you do") || s.contains("what are you capable of") || s.contains("what do you do") ||
+          s.contains("what can dvex do") || s.contains("capabilities") ||
+          s.contains("enna panna mudiyum") || s.contains("enna seiya mudiyum") ||
+          s.contains("என்ன செய்ய முடியும்") || s.contains("என்ன பண்ண முடியும்") ->
+        if (isTamilScript) "நான் ஆப்ஸ் திறக்க, அழைப்புகள் விடுக்க, செய்திகள் அனுப்ப, டார்ச், அலாரம் மற்றும் வானிலை விவரங்களை அளிக்க உதவ முடியும், Sir."
+        else if (isTanglish) "Naan apps open panna, call panna, message anuppa, flashlight, alarm set panna, time and weather solla mudiyum, Sir."
+        else "I can open apps, make phone calls, send messages, control your flashlight and settings, tell the time and weather, and help answer your questions, Sir."
 
       s.contains("hello") || s.contains("hi") || s.contains("hey") ->
         if (isTamilScript) "வணக்கம், Sir! சொல்லுங்க."

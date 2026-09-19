@@ -8,6 +8,7 @@ import android.provider.ContactsContract
 import android.util.Log
 import androidx.core.content.ContextCompat
 import com.example.voice.TamilTransliteration
+import java.util.Locale
 
 data class ResolvedContact(
   val name: String,
@@ -38,7 +39,8 @@ class ContactResolver(private val context: Context) {
     // Strip common Tamil/Tanglish command affixes
     val commandAffixes = listOf(
       "call pannunga", "call pannu", "call seiy", "call podu", "phone pannu", "phone podu",
-      "message anuppu", "message anupu", "whatsapp anuppu", "whatsapp anupu", "email anuppu",
+      "message anuppu", "message anupu", "msg pannu", "msg anuppu", "msg anupu", "msg podu",
+      "whatsapp anuppu", "whatsapp anupu", "email anuppu",
       "கால் பண்ணுங்க", "கால் பண்ணு", "போன் பண்ணு", "கால் செய்", "போன் போடு", "அழைக்கவும்", "அழை",
       "செய்தி அனுப்பு", "மெசேஜ் அனுப்பு", "வாட்ஸ்அப் அனுப்பு", "மின்னஞ்சல் அனுப்பு",
       "பேச வேண்டும்", "பேசணும்"
@@ -51,7 +53,9 @@ class ContactResolver(private val context: Context) {
       "-ku", " ku", "-kku", " kku",
       "-vukku", "vukku", "-ukku", "ukku",
       "-kitta", " kitta", "-oda", " oda",
-      "வுக்கு", "க்கு", "டம்", "கிட்ட", "ரிடம்"
+      "-va", " va", "-voda", " voda",
+      "-a", " a",
+      "வுக்கு", "க்கு", "டம்", "கிட்ட", "ரிடம்", "வை", "ஐ"
     )
     for (suffix in suffixes) {
       if (q.endsWith(suffix, ignoreCase = true) && q.length > suffix.length) {
@@ -88,19 +92,32 @@ class ContactResolver(private val context: Context) {
       return initialResult
     }
 
-    // 4. Tamil kinship aliases fallback (e.g. "அம்மா" -> "Amma", "Mom", "Mother")
-    val tamilKinshipAliases = mapOf(
+    // 4. Tamil and English kinship aliases fallback (e.g. "Amma" -> "Mom", "Mother", or "Mom" -> "Amma")
+    val kinshipAliases = mapOf(
       "அம்மா" to listOf("amma", "mom", "mother", "mummy", "maa"),
+      "amma" to listOf("mom", "mother", "mummy", "maa", "அம்மா"),
+      "mom" to listOf("amma", "mother", "mummy", "maa", "அம்மா"),
+      "mother" to listOf("amma", "mom", "mummy", "அம்மா"),
       "அப்பா" to listOf("appa", "dad", "father", "daddy", "paa"),
+      "appa" to listOf("dad", "father", "daddy", "paa", "அப்பா"),
+      "dad" to listOf("appa", "father", "daddy", "paa", "அப்பா"),
+      "father" to listOf("appa", "dad", "daddy", "அப்பா"),
       "அண்ணா" to listOf("anna", "annan", "brother", "bro"),
+      "anna" to listOf("brother", "bro", "annan", "அண்ணா"),
       "அண்ணன்" to listOf("annan", "anna", "brother", "bro"),
       "தம்பி" to listOf("thambi", "brother", "bro"),
+      "thambi" to listOf("brother", "bro", "தம்பி"),
       "அக்கா" to listOf("akka", "sister", "sis"),
+      "akka" to listOf("sister", "sis", "அக்கா"),
       "தங்கை" to listOf("thangai", "sister", "sis"),
+      "thangai" to listOf("sister", "sis", "தங்கை"),
       "மனைவி" to listOf("wife", "wifey"),
-      "கணவர்" to listOf("husband", "hubby")
+      "wife" to listOf("மனைவி", "wifey"),
+      "கணவர்" to listOf("husband", "hubby"),
+      "husband" to listOf("கணவர்", "hubby")
     )
-    val aliases = tamilKinshipAliases[clean]
+    val lowerClean = clean.lowercase(Locale.ROOT)
+    val aliases = kinshipAliases[clean] ?: kinshipAliases[lowerClean]
     if (aliases != null) {
       for (alias in aliases) {
         val aliasResult = queryDeviceContacts(alias)

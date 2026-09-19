@@ -79,6 +79,7 @@ class AndroidSpeechWakeWordDetector(
     onTriggerCallback = onTrigger
     onErrorCallback = onError
     isListening = true
+    mainHandler.removeCallbacksAndMessages(null)
 
     mainHandler.post {
       initAndListen()
@@ -108,6 +109,7 @@ class AndroidSpeechWakeWordDetector(
     lastTriggerTimeMs = now
     Log.i(TAG, "D-VEX wake-word triggered by phrase: \"$phrase\"")
     isListening = false
+    mainHandler.removeCallbacksAndMessages(null)
     try {
       speechRecognizer?.stopListening()
       speechRecognizer?.cancel()
@@ -150,9 +152,9 @@ class AndroidSpeechWakeWordDetector(
 
             if (isListening) {
               val delayMs = if (error == SpeechRecognizer.ERROR_NO_MATCH || error == SpeechRecognizer.ERROR_SPEECH_TIMEOUT) {
-                250L
+                800L
               } else {
-                600L
+                1200L
               }
               mainHandler.postDelayed({
                 if (isListening) initAndListen()
@@ -176,7 +178,7 @@ class AndroidSpeechWakeWordDetector(
             if (isListening) {
               mainHandler.postDelayed({
                 if (isListening) initAndListen()
-              }, 250)
+              }, 800L)
             }
           }
 
@@ -200,6 +202,9 @@ class AndroidSpeechWakeWordDetector(
         putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
         putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
         putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 5)
+        putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 6000L)
+        putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 6000L)
+        putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS, 3000L)
       }
       speechRecognizer?.startListening(intent)
     } catch (e: Exception) {
@@ -251,6 +256,7 @@ class AndroidSpeechWakeWordDetector(
 
   override fun stop() {
     isListening = false
+    mainHandler.removeCallbacksAndMessages(null)
     mainHandler.post {
       try {
         speechRecognizer?.stopListening()

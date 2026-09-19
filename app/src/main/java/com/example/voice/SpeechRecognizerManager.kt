@@ -124,8 +124,8 @@ class SpeechRecognizerManager(private val context: Context) {
                 Log.i(TAG, "Final text: $recognizedText")
                 onResultCallback?.invoke(recognizedText)
               } else {
-                Log.w(TAG, "No clear command recognized")
-                onErrorCallback?.invoke("No clear command detected.")
+                Log.w(TAG, "No clear command recognized (silence)")
+                onErrorCallback?.invoke("No speech detected")
               }
             }
 

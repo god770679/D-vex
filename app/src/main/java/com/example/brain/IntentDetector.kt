@@ -283,6 +283,11 @@ class IntentDetector {
         .replace("பேசணும்", "")
         .replace("ku call", "", ignoreCase = true)
         .replace("ku phone", "", ignoreCase = true)
+        .replace("kitta call pannu", "", ignoreCase = true)
+        .replace("kitta call", "", ignoreCase = true)
+        .replace("kitta phone", "", ignoreCase = true)
+        .replace("va call pannu", "", ignoreCase = true)
+        .replace("va call", "", ignoreCase = true)
         .trim()
       while (recipient.endsWith(".") || recipient.endsWith("?") || recipient.endsWith("!")) {
         recipient = recipient.substring(0, recipient.length - 1).trim()
@@ -338,6 +343,11 @@ class IntentDetector {
         lower.startsWith("reply to ") ||
         lower.contains("message anupu") ||
         lower.contains("message anuppu") ||
+        lower.contains("msg anupu") ||
+        lower.contains("msg anuppu") ||
+        lower.contains("msg pannu") ||
+        lower.contains("msg podu") ||
+        lower.contains("message pannu") ||
         lower.contains("sms anupu") ||
         lower.contains("sms anuppu") ||
         lower.contains("மெசேஜ் அனுப்பு") ||
@@ -354,12 +364,18 @@ class IntentDetector {
         .replace(Regex("^(can you please |can you |please )?reply to", RegexOption.IGNORE_CASE), "")
         .replace("message anuppu", "", ignoreCase = true)
         .replace("message anupu", "", ignoreCase = true)
+        .replace("msg anuppu", "", ignoreCase = true)
+        .replace("msg anupu", "", ignoreCase = true)
+        .replace("msg pannu", "", ignoreCase = true)
+        .replace("msg podu", "", ignoreCase = true)
+        .replace("message pannu", "", ignoreCase = true)
         .replace("sms anuppu", "", ignoreCase = true)
         .replace("sms anupu", "", ignoreCase = true)
         .replace("மெசேஜ் அனுப்பு", "")
         .replace("செய்தி அனுப்பு", "")
         .replace("எஸ்எம்எஸ் அனுப்பு", "")
         .replace("ku message", "", ignoreCase = true)
+        .replace("ku msg", "", ignoreCase = true)
         .trim()
 
       var body: String? = null
@@ -707,8 +723,18 @@ class IntentDetector {
     }
 
     if (lower.contains("how are you") || lower.contains("epdi irukka") || lower.contains("epdi irukkeenga") ||
+        lower.contains("eppadi irukinga") || lower.contains("eppadi irukeenga") || lower.contains("eppadi irukkenga") ||
+        lower.contains("epdi irukinga") || lower.contains("eppadi irukireergal") ||
         lower.contains("எப்படி இருக்கீங்க") || lower.contains("எப்படி இருக்கிறீர்கள்") || lower.contains("நலமா") ||
         lower.contains("sowkiyama")
+    ) {
+      return DvexIntent.Conversation(rawText)
+    }
+
+    if (lower.contains("what can you do") || lower.contains("what are you capable of") || lower.contains("what do you do") ||
+        lower.contains("what can dvex do") || lower.contains("capabilities") ||
+        lower.contains("enna panna mudiyum") || lower.contains("enna seiya mudiyum") ||
+        lower.contains("என்ன செய்ய முடியும்") || lower.contains("என்ன பண்ண முடியும்") || lower == "help" || lower == "help me"
     ) {
       return DvexIntent.Conversation(rawText)
     }

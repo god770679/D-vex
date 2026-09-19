@@ -80,7 +80,7 @@ class AssistantRepository private constructor(private val context: Context) {
     return DvexSettings(
       alwaysReadyEnabled = prefs.getBoolean("always_ready", true),
       floatingOrbEnabled = prefs.getBoolean("floating_orb", true),
-      wakeWordEnabled = prefs.getBoolean("wake_word", false),
+      wakeWordEnabled = prefs.getBoolean("wake_word", true),
       wakeWordKeyword = prefs.getString("wake_word_keyword", "D-VEX") ?: "D-VEX",
       wakePhrase = prefs.getString("wake_phrase", "D-VEX") ?: "D-VEX",
       orbSizeDp = prefs.getInt("orb_size_dp", 56),
@@ -286,15 +286,20 @@ class AssistantRepository private constructor(private val context: Context) {
       onError = { error ->
         cancelStateWatchdog()
         Log.w(TAG_STT, "SpeechRecognizer returned error: $error")
-        if (error.contains("timed out", ignoreCase = true) ||
+        val isSilenceOrTimeout = error.contains("timed out", ignoreCase = true) ||
             error.contains("No speech", ignoreCase = true) ||
-            error.contains("No match", ignoreCase = true)) {
-          // Timeout with no command: return to passive wake-word listening automatically
-          Log.i(TAG_STT, "No command detected before timeout; returning to passive wake-word listening")
+            error.contains("No match", ignoreCase = true) ||
+            error.contains("No clear command", ignoreCase = true) ||
+            error.contains("Client error", ignoreCase = true) ||
+            error.contains("empty", ignoreCase = true)
+
+        if (isSilenceOrTimeout) {
+          // Timeout or silence with no command: cleanly end listening and return to STANDBY without error prompts
+          Log.i(TAG_STT, "Silence or timeout with no command; returning cleanly to STANDBY without error prompts")
           _assistantState.value = DvexAssistantState.Standby
           _latestResponse.value = "Standing by, Sir."
           scope.launch {
-            delay(400)
+            delay(300)
             returnToRestState()
           }
         } else {
@@ -789,9 +794,9 @@ class AssistantRepository private constructor(private val context: Context) {
 
   fun returnToRestState() {
     cancelStateWatchdog()
+    _assistantState.value = DvexAssistantState.Standby
     if (_settings.value.wakeWordEnabled && DvexPermissionManager.hasAudioPermission(context)) {
       Log.i(TAG_VOICE, "Returned to standby (passive wake-word listening re-armed)")
-      _assistantState.value = DvexAssistantState.WakeWordListening
       scope.launch {
         delay(350)
         wakeWordManager.setAudioSuppressed(false)
@@ -799,7 +804,6 @@ class AssistantRepository private constructor(private val context: Context) {
       }
     } else {
       Log.i(TAG_VOICE, "Returned to standby")
-      _assistantState.value = DvexAssistantState.Standby
       wakeWordManager.setAudioSuppressed(false)
     }
   }
