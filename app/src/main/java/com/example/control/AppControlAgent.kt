@@ -76,7 +76,7 @@ class AppControlAgent(
         recipientQuery.contains("whatsapp", ignoreCase = true)
 
     val opened = if (isWhatsApp) {
-      openWhatsAppConversation(contact.phoneNumber)
+      openWhatsAppConversation(contact.phoneNumber, messageText)
     } else {
       openDefaultSmsConversation(contact.phoneNumber)
     }
@@ -161,10 +161,11 @@ class AppControlAgent(
     }
   }
 
-  private fun openWhatsAppConversation(phoneNumber: String): Boolean {
+  private fun openWhatsAppConversation(phoneNumber: String, messageText: String? = null): Boolean {
     return try {
       val cleanNumber = phoneNumber.replace(Regex("[^0-9]"), "")
-      val uri = Uri.parse("https://api.whatsapp.com/send?phone=$cleanNumber")
+      val textParam = if (!messageText.isNullOrBlank()) "&text=${Uri.encode(messageText)}" else ""
+      val uri = Uri.parse("https://api.whatsapp.com/send?phone=$cleanNumber$textParam")
       val intent = Intent(Intent.ACTION_VIEW, uri).apply {
         setPackage("com.whatsapp")
         addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)

@@ -26,7 +26,6 @@ import com.example.service.DvexAssistantService
 import com.example.ui.AssistantViewModel
 import com.example.ui.DvexHud
 import com.example.ui.components.AlwaysReadySettingsDialog
-import com.example.ui.components.SafetyConfirmationDialog
 import com.example.ui.theme.MyApplicationTheme
 
 class MainActivity : ComponentActivity() {
@@ -43,7 +42,6 @@ class MainActivity : ComponentActivity() {
       MyApplicationTheme {
         val uiState by viewModel.uiState.collectAsState()
         val settings by viewModel.settings.collectAsState()
-        val pendingConfirmation by viewModel.pendingConfirmation.collectAsState()
         val showSettingsDialog by showSettingsDialogState
 
         // Contextual runtime permission launcher for Microphone (Wake-Word & Voice Commands)
@@ -131,14 +129,6 @@ class MainActivity : ComponentActivity() {
               }
             },
             onDismiss = { showSettingsDialogState.value = false }
-          )
-        }
-
-        pendingConfirmation?.let { pending ->
-          SafetyConfirmationDialog(
-            pending = pending,
-            onConfirm = { viewModel.confirmPendingAction() },
-            onCancel = { viewModel.cancelPendingAction() }
           )
         }
       }

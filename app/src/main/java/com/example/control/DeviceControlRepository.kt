@@ -272,17 +272,36 @@ class DeviceControlRepository(
     }
   }
 
-  fun sendEmailAutomated(recipient: String, subject: String? = null, body: String? = null): ToolExecutionResult {
-    // Background automated sending without user screen touch is not implemented
-    return ToolExecutionResult(
-      ToolResultStatus.NOT_SUPPORTED,
-      "send_email",
-      "Sir, email anuppa mudiyala, andha feature ready ah illa."
-    )
+  fun sendEmail(recipient: String, subject: String? = null, body: String? = null): ToolExecutionResult {
+    return try {
+      val uri = Uri.parse("mailto:${Uri.encode(recipient)}")
+      val intent = Intent(Intent.ACTION_SENDTO, uri).apply {
+        if (!subject.isNullOrBlank()) {
+          putExtra(Intent.EXTRA_SUBJECT, subject)
+        }
+        if (!body.isNullOrBlank()) {
+          putExtra(Intent.EXTRA_TEXT, body)
+        }
+        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+      }
+      context.startActivity(intent)
+      ToolExecutionResult(
+        ToolResultStatus.SUCCESS,
+        "send_email",
+        "Sir, $recipient-ku email anuppa composer open panniyachu."
+      )
+    } catch (e: Exception) {
+      Log.e(TAG, "Failed to open email composer", e)
+      ToolExecutionResult(
+        ToolResultStatus.FAILED,
+        "send_email",
+        "Sir, email anuppa mudiyala: ${e.message ?: "Failed"}."
+      )
+    }
   }
 
-  fun sendEmail(recipient: String, subject: String? = null, body: String? = null): ToolExecutionResult {
-    return sendEmailAutomated(recipient, subject, body)
+  fun sendEmailAutomated(recipient: String, subject: String? = null, body: String? = null): ToolExecutionResult {
+    return sendEmail(recipient, subject, body)
   }
 
   fun isWhatsAppInstalled(): Boolean {
@@ -299,7 +318,7 @@ class DeviceControlRepository(
     }
   }
 
-  fun sendWhatsAppAutomated(phoneNumber: String, messageText: String, contactName: String? = null): ToolExecutionResult {
+  fun sendWhatsApp(phoneNumber: String, messageText: String, contactName: String? = null): ToolExecutionResult {
     if (!isWhatsAppInstalled()) {
       return ToolExecutionResult(
         ToolResultStatus.FAILED,
@@ -308,13 +327,32 @@ class DeviceControlRepository(
       )
     }
 
-    // Checking automation/accessibility capability for direct screenless sending:
-    // If not actually reliable/implemented yet, clearly report inability to send automatically
-    return ToolExecutionResult(
-      ToolResultStatus.NOT_SUPPORTED,
-      "whatsapp",
-      "Sir, WhatsApp la automatic ah anuppa mudiyala ippo."
-    )
+    return try {
+      val cleanNumber = phoneNumber.replace(Regex("[^0-9]"), "")
+      val uri = Uri.parse("https://api.whatsapp.com/send?phone=$cleanNumber&text=${Uri.encode(messageText)}")
+      val intent = Intent(Intent.ACTION_VIEW, uri).apply {
+        setPackage("com.whatsapp")
+        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+      }
+      context.startActivity(intent)
+      val name = contactName ?: phoneNumber
+      ToolExecutionResult(
+        ToolResultStatus.SUCCESS,
+        "whatsapp",
+        "Sir, $name-ku WhatsApp-la message anuppiyachu."
+      )
+    } catch (e: Exception) {
+      Log.e(TAG, "Failed to send WhatsApp message", e)
+      ToolExecutionResult(
+        ToolResultStatus.FAILED,
+        "whatsapp",
+        "Sir, WhatsApp message anuppa mudiyala."
+      )
+    }
+  }
+
+  fun sendWhatsAppAutomated(phoneNumber: String, messageText: String, contactName: String? = null): ToolExecutionResult {
+    return sendWhatsApp(phoneNumber, messageText, contactName)
   }
 
   fun toggleFlashlight(enable: Boolean? = null): ToolExecutionResult {

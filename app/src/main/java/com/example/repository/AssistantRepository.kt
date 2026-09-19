@@ -69,6 +69,7 @@ class AssistantRepository private constructor(private val context: Context) {
   private var stateWatchdogJob: Job? = null
 
   init {
+    wakeWordManager.updateKeyword(_settings.value.wakePhrase)
     wakeWordManager.setOnTriggerListener { phrase ->
       Log.i(TAG_WAKE, "Wake word detected: \"$phrase\"")
       handleWakeWordTriggered(phrase)
@@ -331,6 +332,10 @@ class AssistantRepository private constructor(private val context: Context) {
       cancelStateWatchdog()
 
       val toolResult = brainResult.toolResult
+      if (toolResult.status != DvexToolStatus.CONFIRMATION_REQUIRED) {
+        _pendingConfirmation.value = null
+      }
+
       when (toolResult.status) {
         DvexToolStatus.CONFIRMATION_REQUIRED -> {
           _assistantState.value = DvexAssistantState.Standby

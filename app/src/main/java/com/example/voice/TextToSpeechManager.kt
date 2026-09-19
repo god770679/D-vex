@@ -290,7 +290,7 @@ class TextToSpeechManager(private val context: Context) {
   }
 
   /**
-   * Checks whether the current TTS engine has satisfactory, installed voice support for Tamil.
+   * Checks whether the current TTS engine has voice support for Tamil.
    */
   fun isTamilQualityAcceptable(): Boolean {
     val engine = tts ?: return false
@@ -303,34 +303,13 @@ class TextToSpeechManager(private val context: Context) {
       }
     } ?: TextToSpeech.LANG_NOT_SUPPORTED
 
-    if (status == TextToSpeech.LANG_NOT_SUPPORTED || status == TextToSpeech.LANG_MISSING_DATA) {
-      return false
-    }
-
-    val availableVoices = try {
-      engine.voices
-    } catch (e: Exception) {
-      null
-    }
-
-    val tamilVoices = availableVoices?.filter { voice ->
-      val lang = voice.locale.language.lowercase(Locale.ROOT)
-      val tag = voice.locale.toLanguageTag().lowercase(Locale.ROOT)
-      lang == "ta" || tag.startsWith("ta")
-    }
-
-    if (!tamilVoices.isNullOrEmpty()) {
-      // Must have at least one voice that is installed and not missing data
-      return tamilVoices.any { !it.features.contains(TextToSpeech.Engine.KEY_FEATURE_NOT_INSTALLED) }
-    }
-
     return status >= TextToSpeech.LANG_AVAILABLE
   }
 
   /**
    * Synthesizes and speaks text.
-   * Auto-detects Tamil script and verifies voice quality. If native Tamil TTS is missing
-   * or unnatural on device, smoothly falls back to Tanglish via Indian English voice.
+   * Auto-detects Tamil script and speaks in Tamil via Tamil TTS.
+   * Supports Tanglish via Indian English voice.
    */
   fun speak(text: String, languageCode: String? = null, onDone: (() -> Unit)? = null) {
     if (!isInitialized || tts == null) {
@@ -359,21 +338,9 @@ class TextToSpeechManager(private val context: Context) {
         val treatAsTamil = containsTamil || isExplicitTamil
 
         if (treatAsTamil) {
-          val tamilQualityOk = isTamilQualityAcceptable()
-
-          if (tamilQualityOk && containsTamil) {
-            // Native Tamil is supported with good quality: speak with calm Tamil settings
-            setupVoiceAndLanguage(engine, Locale.forLanguageTag("ta-IN"), isTamil = true)
-            val textToSpeak = sanitizeTextForSpeech(text)
-            speakUtterance(engine, textToSpeak)
-          } else {
-            // Graceful fallback: Convert to Tanglish (Latin script) and speak with Indian English voice
-            Log.i(TAG, "Native Tamil TTS quality is unverified/absent; activating graceful Tanglish fallback")
-            setupVoiceAndLanguage(engine, Locale.forLanguageTag("en-IN"), isTamil = false)
-            val tanglishText = TamilTransliteration.toTanglish(text)
-            val textToSpeak = sanitizeTextForSpeech(tanglishText)
-            speakUtterance(engine, textToSpeak)
-          }
+          setupVoiceAndLanguage(engine, Locale.forLanguageTag("ta-IN"), isTamil = true)
+          val textToSpeak = sanitizeTextForSpeech(text)
+          speakUtterance(engine, textToSpeak)
         } else if (isExplicitTanglish) {
           // Explicit Tanglish spoken with Indian English voice for natural phonetics
           setupVoiceAndLanguage(engine, Locale.forLanguageTag("en-IN"), isTamil = false)

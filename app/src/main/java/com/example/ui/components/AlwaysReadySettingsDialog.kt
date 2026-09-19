@@ -33,16 +33,23 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -173,7 +180,7 @@ fun AlwaysReadySettingsDialog(
             color = DvexTextPrimary
           )
           Text(
-            text = "Select phrase that initiates listening protocol",
+            text = "Select preset or enter custom wake phrase",
             fontFamily = FontFamily.Monospace,
             fontSize = 11.sp,
             color = DvexTextMuted
@@ -184,7 +191,7 @@ fun AlwaysReadySettingsDialog(
             horizontalArrangement = Arrangement.spacedBy(8.dp)
           ) {
             listOf("D-VEX", "Hey D-VEX").forEach { phrase ->
-              val isSelected = settings.wakePhrase == phrase
+              val isSelected = settings.wakePhrase.equals(phrase, ignoreCase = true)
               Box(
                 modifier = Modifier
                   .weight(1f)
@@ -205,6 +212,39 @@ fun AlwaysReadySettingsDialog(
               }
             }
           }
+
+          Spacer(modifier = Modifier.height(8.dp))
+          var customInput by remember(settings.wakePhrase) { mutableStateOf(settings.wakePhrase) }
+          OutlinedTextField(
+            value = customInput,
+            onValueChange = { newValue ->
+              customInput = newValue
+              if (newValue.isNotBlank()) {
+                onSettingsChanged(settings.copy(wakePhrase = newValue.trim(), wakeWordKeyword = newValue.trim()))
+              }
+            },
+            label = {
+              Text(
+                "CUSTOM WAKE PHRASE",
+                fontFamily = FontFamily.Monospace,
+                fontSize = 10.sp,
+                color = DvexTextMuted
+              )
+            },
+            singleLine = true,
+            textStyle = TextStyle(
+              fontFamily = FontFamily.Monospace,
+              fontSize = 12.sp,
+              color = DvexNeonRedBright
+            ),
+            colors = OutlinedTextFieldDefaults.colors(
+              focusedBorderColor = DvexNeonRedBright,
+              unfocusedBorderColor = DvexBorderMuted,
+              focusedContainerColor = DvexSurfaceDark,
+              unfocusedContainerColor = DvexSurfaceDark
+            ),
+            modifier = Modifier.fillMaxWidth()
+          )
         }
 
         SettingToggleRow(

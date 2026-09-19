@@ -55,14 +55,23 @@ class DvexSmartBrain(
         activePendingIntent = null
         activePendingId = null
 
+        val confirmationLang = intentDetector.detectIntent(rawInput, conversationContext).language
+        val effectiveLang = if (confirmationLang != DetectedLanguage.ENGLISH) {
+          confirmationLang
+        } else {
+          conversationContext.lastLanguage
+        }
+
         // Execute the confirmed sensitive action
         val executionResult = executeConfirmedAction(confirmedIntent)
-        val spoken = responseGenerator.generateResponse(confirmedIntent, executionResult, DetectedLanguage.ENGLISH)
+        val spoken = responseGenerator.generateResponse(confirmedIntent, executionResult, effectiveLang)
         Log.i(TAG_RESPONSE, spoken)
         return BrainExecutionResult(
           intent = confirmedIntent,
           toolResult = executionResult,
           spokenText = spoken,
+          displayText = spoken,
+          language = effectiveLang,
           toolName = executionResult.toolName
         )
       } else if (isNegative(lower)) {
@@ -70,17 +79,32 @@ class DvexSmartBrain(
         activePendingIntent = null
         activePendingId = null
 
+        val cancelLang = intentDetector.detectIntent(rawInput, conversationContext).language
+        val effectiveLang = if (cancelLang != DetectedLanguage.ENGLISH) {
+          cancelLang
+        } else {
+          conversationContext.lastLanguage
+        }
+
+        val cancelMessage = when (effectiveLang) {
+          DetectedLanguage.TAMIL -> "செயல் ரத்து செய்யப்பட்டது, Sir."
+          DetectedLanguage.TANGLISH -> "Action cancel panniyachu, Sir."
+          else -> "Action cancelled, Sir."
+        }
+
         val cancelResult = DvexToolResult(
           status = DvexToolStatus.SUCCESS,
           toolName = "cancellation",
-          message = "Action cancelled, Sir.",
-          spokenText = "Action cancelled, Sir."
+          message = cancelMessage,
+          spokenText = cancelMessage
         )
-        Log.i(TAG_RESPONSE, "Action cancelled, Sir.")
+        Log.i(TAG_RESPONSE, cancelMessage)
         return BrainExecutionResult(
           intent = DvexIntent.Conversation(rawInput),
           toolResult = cancelResult,
-          spokenText = "Action cancelled, Sir.",
+          spokenText = cancelMessage,
+          displayText = cancelMessage,
+          language = effectiveLang,
           toolName = "cancellation"
         )
       }

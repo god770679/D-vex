@@ -7,6 +7,7 @@ import android.database.Cursor
 import android.provider.ContactsContract
 import android.util.Log
 import androidx.core.content.ContextCompat
+import com.example.voice.TamilTransliteration
 
 data class ResolvedContact(
   val name: String,
@@ -32,13 +33,25 @@ class ContactResolver(private val context: Context) {
    */
   fun cleanContactQuery(raw: String): String {
     var q = raw.trim()
-    q = q.replace(Regex("^(to|for|call|dial|message|text|email|mail)\\s+", RegexOption.IGNORE_CASE), "").trim()
+    q = q.replace(Regex("^(to|for|call|dial|phone|make a call to|message|text|email|mail)\\s+", RegexOption.IGNORE_CASE), "").trim()
+
+    // Strip common Tamil/Tanglish command affixes
+    val commandAffixes = listOf(
+      "call pannunga", "call pannu", "call seiy", "call podu", "phone pannu", "phone podu",
+      "message anuppu", "message anupu", "whatsapp anuppu", "whatsapp anupu", "email anuppu",
+      "கால் பண்ணுங்க", "கால் பண்ணு", "போன் பண்ணு", "கால் செய்", "போன் போடு", "அழைக்கவும்", "அழை",
+      "செய்தி அனுப்பு", "மெசேஜ் அனுப்பு", "வாட்ஸ்அப் அனுப்பு", "மின்னஞ்சல் அனுப்பு",
+      "பேச வேண்டும்", "பேசணும்"
+    )
+    for (affix in commandAffixes) {
+      q = q.replace(affix, "", ignoreCase = true).trim()
+    }
 
     val suffixes = listOf(
       "-ku", " ku", "-kku", " kku",
       "-vukku", "vukku", "-ukku", "ukku",
       "-kitta", " kitta", "-oda", " oda",
-      "வுக்கு", "க்கு", "டம்", "கிட்ட"
+      "வுக்கு", "க்கு", "டம்", "கிட்ட", "ரிடம்"
     )
     for (suffix in suffixes) {
       if (q.endsWith(suffix, ignoreCase = true) && q.length > suffix.length) {
@@ -46,7 +59,7 @@ class ContactResolver(private val context: Context) {
         break
       }
     }
-    return q.trimEnd('.', '?', '!', ',', '-', ' ')
+    return q.trimEnd('.', '?', '!', ',', '-', ' ').trim()
   }
 
   /**
@@ -69,8 +82,44 @@ class ContactResolver(private val context: Context) {
       return ContactSearchResult.PermissionDenied
     }
 
-    // 3. Query Contacts Provider
-    return queryDeviceContacts(clean)
+    // 3. Query Contacts Provider with original clean query
+    val initialResult = queryDeviceContacts(clean)
+    if (initialResult !is ContactSearchResult.NotFound) {
+      return initialResult
+    }
+
+    // 4. Tamil kinship aliases fallback (e.g. "அம்மா" -> "Amma", "Mom", "Mother")
+    val tamilKinshipAliases = mapOf(
+      "அம்மா" to listOf("amma", "mom", "mother", "mummy", "maa"),
+      "அப்பா" to listOf("appa", "dad", "father", "daddy", "paa"),
+      "அண்ணா" to listOf("anna", "annan", "brother", "bro"),
+      "அண்ணன்" to listOf("annan", "anna", "brother", "bro"),
+      "தம்பி" to listOf("thambi", "brother", "bro"),
+      "அக்கா" to listOf("akka", "sister", "sis"),
+      "தங்கை" to listOf("thangai", "sister", "sis"),
+      "மனைவி" to listOf("wife", "wifey"),
+      "கணவர்" to listOf("husband", "hubby")
+    )
+    val aliases = tamilKinshipAliases[clean]
+    if (aliases != null) {
+      for (alias in aliases) {
+        val aliasResult = queryDeviceContacts(alias)
+        if (aliasResult !is ContactSearchResult.NotFound) {
+          return aliasResult
+        }
+      }
+    }
+
+    // 5. Transliteration fallback (e.g. Tamil script to Tanglish phonetic query)
+    val transliterated = TamilTransliteration.toTanglish(clean).trim()
+    if (transliterated.isNotBlank() && !transliterated.equals(clean, ignoreCase = true)) {
+      val transResult = queryDeviceContacts(transliterated)
+      if (transResult !is ContactSearchResult.NotFound) {
+        return transResult
+      }
+    }
+
+    return ContactSearchResult.NotFound(clean)
   }
 
   fun resolveContact(query: String): ResolvedContact? {

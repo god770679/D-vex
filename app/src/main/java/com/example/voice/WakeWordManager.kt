@@ -46,7 +46,7 @@ class AndroidSpeechWakeWordDetector(
   private var onErrorCallback: ((String) -> Unit)? = null
   private val mainHandler = Handler(Looper.getMainLooper())
   private var lastTriggerTimeMs = 0L
-  private val TRIGGER_DEBOUNCE_MS = 2500L
+  private val TRIGGER_DEBOUNCE_MS = 1200L
 
   @Volatile private var isAudioSuppressed = false
   @Volatile private var lastSpokenText = ""
@@ -124,12 +124,7 @@ class AndroidSpeechWakeWordDetector(
 
     try {
       if (speechRecognizer == null) {
-        speechRecognizer = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
-          SpeechRecognizer.isOnDeviceRecognitionAvailable(context)) {
-          SpeechRecognizer.createOnDeviceSpeechRecognizer(context)
-        } else {
-          SpeechRecognizer.createSpeechRecognizer(context)
-        }
+        speechRecognizer = SpeechRecognizer.createSpeechRecognizer(context)
 
         speechRecognizer?.setRecognitionListener(object : RecognitionListener {
           override fun onReadyForSpeech(params: Bundle?) {}
@@ -139,11 +134,29 @@ class AndroidSpeechWakeWordDetector(
           override fun onEndOfSpeech() {}
 
           override fun onError(error: Int) {
-            // Auto-restart loop unless explicitly stopped
+            try {
+              speechRecognizer?.cancel()
+            } catch (e: Exception) {}
+
+            if (error == SpeechRecognizer.ERROR_RECOGNIZER_BUSY ||
+                error == SpeechRecognizer.ERROR_CLIENT ||
+                error == SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS
+            ) {
+              try {
+                speechRecognizer?.destroy()
+                speechRecognizer = null
+              } catch (e: Exception) {}
+            }
+
             if (isListening) {
+              val delayMs = if (error == SpeechRecognizer.ERROR_NO_MATCH || error == SpeechRecognizer.ERROR_SPEECH_TIMEOUT) {
+                250L
+              } else {
+                600L
+              }
               mainHandler.postDelayed({
                 if (isListening) initAndListen()
-              }, 600)
+              }, delayMs)
             }
           }
 
@@ -157,10 +170,13 @@ class AndroidSpeechWakeWordDetector(
                 }
               }
             }
+            try {
+              speechRecognizer?.cancel()
+            } catch (e: Exception) {}
             if (isListening) {
               mainHandler.postDelayed({
                 if (isListening) initAndListen()
-              }, 400)
+              }, 250)
             }
           }
 
@@ -182,10 +198,8 @@ class AndroidSpeechWakeWordDetector(
 
       val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
         putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-        putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.getDefault())
         putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
-        putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 3)
-        putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
+        putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 5)
       }
       speechRecognizer?.startListening(intent)
     } catch (e: Exception) {
@@ -195,30 +209,44 @@ class AndroidSpeechWakeWordDetector(
   }
 
   private fun matchesWakeWord(phrase: String): Boolean {
-    val norm = phrase.lowercase(Locale.ROOT).replace("-", " ").replace(".", " ").replace("'", " ")
-    val targetKeyword = keyword.lowercase(Locale.ROOT).replace("-", " ").trim()
-    return norm.contains("d vex") ||
-      norm.contains("dvex") ||
-      norm.contains("dee vex") ||
-      norm.contains("devex") ||
-      norm.contains("d-vex") ||
-      norm.contains("the vex") ||
-      norm.contains("t-vex") ||
-      norm.contains("t vex") ||
-      norm.contains("divex") ||
-      norm.contains("divax") ||
-      norm.contains("d fix") ||
-      norm.contains("d fax") ||
-      norm.contains("d box") ||
-      norm.contains("hey d vex") ||
-      norm.contains("hey dvex") ||
-      norm.contains("hey devex") ||
-      norm.contains("hey d-vex") ||
-      norm.contains("hey dee vex") ||
-      norm.contains("டி-வெக்ஸ்") ||
-      norm.contains("டிவெக்ஸ்") ||
-      norm.contains("டீவெக்ஸ்") ||
-      (targetKeyword.isNotEmpty() && norm.contains(targetKeyword))
+    val norm = phrase.lowercase(Locale.ROOT)
+      .replace("-", " ")
+      .replace(".", " ")
+      .replace("'", " ")
+      .replace(",", " ")
+      .trim()
+    val targetKeyword = keyword.lowercase(Locale.ROOT)
+      .replace("-", " ")
+      .replace(".", " ")
+      .replace("'", " ")
+      .trim()
+
+    // 1. Check custom configured keyword if specified
+    if (targetKeyword.isNotEmpty()) {
+      if (norm.contains(targetKeyword) || norm.startsWith(targetKeyword)) {
+        return true
+      }
+    }
+
+    // 2. Comprehensive phonetic and transcribed variations of "D-VEX" / "Hey D-VEX"
+    val dvexVariants = listOf(
+      "d vex", "dvex", "dee vex", "devex", "deevex",
+      "the vex", "t vex", "divex", "divax",
+      "d fix", "d fax", "d box", "defect", "defects",
+      "dev x", "dev-x", "dev ex", "de vex", "d vac", "d vax",
+      "dvecks", "deveks", "devecks", "d vecks", "d x", "dx",
+      "hey d vex", "hey dvex", "hey devex", "hey dee vex",
+      "hi dvex", "hi d vex", "hello dvex",
+      "டி-வெக்ஸ்", "டிவெக்ஸ்", "டீவெக்ஸ்", "டீ-வெக்ஸ்", "ஹேய் டிவெக்ஸ்", "ஹே டிவெக்ஸ்"
+    )
+
+    for (variant in dvexVariants) {
+      if (norm.contains(variant)) {
+        return true
+      }
+    }
+
+    return false
   }
 
   override fun stop() {

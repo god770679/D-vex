@@ -660,12 +660,9 @@ class DvexToolRouter(
 
         // 2. Direct fallback if Accessibility service is not running
         if (isWhatsApp) {
-          val res = deviceControl.sendWhatsAppAutomated(contact.phoneNumber, body, contact.name)
+          val res = deviceControl.sendWhatsApp(contact.phoneNumber, body, contact.name)
           DvexToolResult(
-            status = when (res.status) {
-              ToolResultStatus.SUCCESS -> DvexToolStatus.SUCCESS
-              else -> DvexToolStatus.UNSUPPORTED
-            },
+            status = if (res.status == ToolResultStatus.SUCCESS) DvexToolStatus.SUCCESS else DvexToolStatus.FAILED,
             toolName = "whatsapp",
             message = res.message,
             spokenText = res.message
@@ -688,9 +685,10 @@ class DvexToolRouter(
 
       is DvexIntent.SendEmail -> {
         Log.i(TAG_ROUTER, "Executing confirmed email for: ${intent.recipient}")
-        val res = deviceControl.sendEmailAutomated(intent.recipient, intent.subject, intent.body)
+        val res = deviceControl.sendEmail(intent.recipient, intent.subject, intent.body)
+        val status = if (res.status == ToolResultStatus.SUCCESS) DvexToolStatus.SUCCESS else DvexToolStatus.FAILED
         DvexToolResult(
-          status = DvexToolStatus.UNSUPPORTED,
+          status = status,
           toolName = "send_email",
           message = res.message,
           spokenText = res.message

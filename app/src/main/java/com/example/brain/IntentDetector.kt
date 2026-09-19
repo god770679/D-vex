@@ -195,7 +195,9 @@ class IntentDetector {
         lower.startsWith("email ") ||
         lower.contains("email anuppu") ||
         lower.contains("email anupu") ||
-        lower.contains("mail anuppu")
+        lower.contains("mail anuppu") ||
+        lower.contains("மின்னஞ்சல் அனுப்பு") ||
+        lower.contains("ஈமெயில் அனுப்பு")
 
     if (isEmail) {
       var recipient = rawText
@@ -205,6 +207,8 @@ class IntentDetector {
         .replace("email anuppu", "", ignoreCase = true)
         .replace("email anupu", "", ignoreCase = true)
         .replace("mail anuppu", "", ignoreCase = true)
+        .replace("மின்னஞ்சல் அனுப்பு", "")
+        .replace("ஈமெயில் அனுப்பு", "")
         .replace("ku email", "", ignoreCase = true)
         .replace("ku mail", "", ignoreCase = true)
         .trim()
@@ -238,8 +242,19 @@ class IntentDetector {
         lower.startsWith("dial ") ||
         lower.contains("call pannu") ||
         lower.contains("call pannunga") ||
+        lower.contains("call seiy") ||
+        lower.contains("call podu") ||
+        lower.contains("phone pannu") ||
+        lower.contains("phone podu") ||
         lower.contains("கால் பண்ணு") ||
         lower.contains("போன் பண்ணு") ||
+        lower.contains("கால் செய்") ||
+        lower.contains("போன் போடு") ||
+        lower.contains("கால் போடு") ||
+        lower.contains("அழைக்கவும்") ||
+        lower.contains("அழை") ||
+        lower.contains("பேச வேண்டும்") ||
+        lower.contains("பேசணும்") ||
         lower == "call" ||
         lower.startsWith("make a call to ") ||
         lower.startsWith("phone ")
@@ -250,11 +265,24 @@ class IntentDetector {
         .replace(Regex("^(can you please |can you |please )?dial", RegexOption.IGNORE_CASE), "")
         .replace(Regex("^(can you please |can you |please )?make a call to", RegexOption.IGNORE_CASE), "")
         .replace(Regex("^(can you please |can you |please )?phone", RegexOption.IGNORE_CASE), "")
-        .replace("call pannu", "", ignoreCase = true)
         .replace("call pannunga", "", ignoreCase = true)
+        .replace("call pannu", "", ignoreCase = true)
+        .replace("call seiy", "", ignoreCase = true)
+        .replace("call podu", "", ignoreCase = true)
+        .replace("phone pannu", "", ignoreCase = true)
+        .replace("phone podu", "", ignoreCase = true)
+        .replace("கால் பண்ணுங்க", "")
         .replace("கால் பண்ணு", "")
         .replace("போன் பண்ணு", "")
+        .replace("கால் செய்", "")
+        .replace("போன் போடு", "")
+        .replace("கால் போடு", "")
+        .replace("அழைக்கவும்", "")
+        .replace("அழை", "")
+        .replace("பேச வேண்டும்", "")
+        .replace("பேசணும்", "")
         .replace("ku call", "", ignoreCase = true)
+        .replace("ku phone", "", ignoreCase = true)
         .trim()
       while (recipient.endsWith(".") || recipient.endsWith("?") || recipient.endsWith("!")) {
         recipient = recipient.substring(0, recipient.length - 1).trim()
@@ -263,9 +291,10 @@ class IntentDetector {
     }
 
     // WhatsApp commands
-    val isWhatsApp = lower.contains("whatsapp") && (
+    val isWhatsApp = (lower.contains("whatsapp") || lower.contains("வாட்ஸ்அப்")) && (
         lower.contains("message") || lower.contains("anuppu") || lower.contains("anupu") ||
-        lower.contains("pannu") || lower.startsWith("send") || lower.startsWith("whatsapp")
+        lower.contains("pannu") || lower.startsWith("send") || lower.startsWith("whatsapp") ||
+        lower.contains("அனுப்பு") || lower.contains("செய்தி")
     )
 
     if (isWhatsApp) {
@@ -277,6 +306,10 @@ class IntentDetector {
         .replace("whatsapp anuppu", "", ignoreCase = true)
         .replace("whatsapp anupu", "", ignoreCase = true)
         .replace("whatsapp pannu", "", ignoreCase = true)
+        .replace("வாட்ஸ்அப் செய்தி அனுப்பு", "")
+        .replace("வாட்ஸ்அப் மெசேஜ் அனுப்பு", "")
+        .replace("வாட்ஸ்அப் அனுப்பு", "")
+        .replace("வாட்ஸ்அப்", "")
         .replace("whatsapp", "", ignoreCase = true)
         .replace("ku message", "", ignoreCase = true)
         .trim()
@@ -308,7 +341,8 @@ class IntentDetector {
         lower.contains("sms anupu") ||
         lower.contains("sms anuppu") ||
         lower.contains("மெசேஜ் அனுப்பு") ||
-        lower.contains("செய்தி அனுப்பு")
+        lower.contains("செய்தி அனுப்பு") ||
+        lower.contains("எஸ்எம்எஸ் அனுப்பு")
 
     if (isMessage) {
       var target = rawText
@@ -318,17 +352,14 @@ class IntentDetector {
         .replace(Regex("^(can you please |can you |please )?send a text to", RegexOption.IGNORE_CASE), "")
         .replace(Regex("^(can you please |can you |please )?text", RegexOption.IGNORE_CASE), "")
         .replace(Regex("^(can you please |can you |please )?reply to", RegexOption.IGNORE_CASE), "")
-        .replace("reply pannu", "", ignoreCase = true)
-        .replace("reply பண்ணு", "")
-        .replace("message anupu", "", ignoreCase = true)
         .replace("message anuppu", "", ignoreCase = true)
-        .replace("sms anupu", "", ignoreCase = true)
+        .replace("message anupu", "", ignoreCase = true)
         .replace("sms anuppu", "", ignoreCase = true)
+        .replace("sms anupu", "", ignoreCase = true)
         .replace("மெசேஜ் அனுப்பு", "")
         .replace("செய்தி அனுப்பு", "")
+        .replace("எஸ்எம்எஸ் அனுப்பு", "")
         .replace("ku message", "", ignoreCase = true)
-        .replace("ku sms", "", ignoreCase = true)
-        .replace("ku reply", "", ignoreCase = true)
         .trim()
 
       var body: String? = null
@@ -336,29 +367,16 @@ class IntentDetector {
         val parts = target.split(Regex(" saying ", RegexOption.IGNORE_CASE), limit = 2)
         target = parts[0].trim()
         body = parts[1].trim()
-      } else if (target.contains(" — ")) {
-        val parts = target.split(" — ", limit = 2)
-        target = parts[0].trim()
-        body = parts[1].trim()
-      } else if (target.contains(" - ")) {
-        val parts = target.split(" - ", limit = 2)
-        target = parts[0].trim()
-        body = parts[1].trim()
-      } else if (target.contains(" : ")) {
-        val parts = target.split(" : ", limit = 2)
-        target = parts[0].trim()
-        body = parts[1].trim()
-      } else if (target.contains(": ")) {
-        val parts = target.split(": ", limit = 2)
+      } else if (target.contains(" என்று ", ignoreCase = true)) {
+        val parts = target.split(Regex(" என்று ", RegexOption.IGNORE_CASE), limit = 2)
         target = parts[0].trim()
         body = parts[1].trim()
       }
 
       val cleanTarget = target.trimEnd('.', '?', '!', ' ')
       val cleanBody = body?.trimEnd('.', '?', '!', ' ')
-      return DvexIntent.SendMessage(cleanTarget.ifBlank { "recipient" }, cleanBody)
+      return DvexIntent.SendMessage(cleanTarget.ifBlank { "recipient" }, cleanBody, isWhatsApp = false)
     }
-
 
     return null
   }
@@ -443,7 +461,11 @@ class IntentDetector {
         lower == "time" ||
         lower.contains("time enna") ||
         lower.contains("mani enna") ||
-        lower.contains("நேரம் என்ன")
+        lower.contains("ippo mani enna") ||
+        lower.contains("நேரம் என்ன") ||
+        lower.contains("மணி என்ன") ||
+        lower.contains("இப்போ நேரம் என்ன") ||
+        lower.contains("இப்போது நேரம் என்ன")
     ) {
       return DvexIntent.GetTime
     }
@@ -640,6 +662,8 @@ class IntentDetector {
       " open பண்ணு",
       " open பண்ணுங்க",
       " ஓபன் பண்ணு",
+      " திறக்கவும்",
+      " திற",
       " open",
       " launch"
     )
@@ -669,12 +693,35 @@ class IntentDetector {
   // --- General Conversation & Knowledge ---
   private fun parseConversationAndKnowledge(rawText: String, lower: String): DvexIntent? {
     if (lower == "who are you" || lower == "what are you" || lower == "what is your name" ||
-        lower.contains("tell me about yourself") || lower.contains("neenga yaaru") || lower.contains("who made you")
+        lower.contains("tell me about yourself") || lower.contains("neenga yaaru") || lower.contains("who made you") ||
+        lower.contains("நீ யார்") || lower.contains("நீங்கள் யார்") || lower.contains("உன் பெயர் என்ன") ||
+        lower.contains("உங்கள் பெயர் என்ன") || lower.contains("nee yaaru")
     ) {
       return DvexIntent.Conversation(rawText)
     }
 
-    if (lower == "hello" || lower == "hi" || lower == "hey" || lower == "vanakkam" || lower == "வணக்கம்") {
+    if (lower == "hello" || lower == "hi" || lower == "hey" || lower == "vanakkam" || lower == "வணக்கம்" ||
+        lower.contains("காலை வணக்கம்") || lower.contains("மாலை வணக்கம்") || lower == "வணக்கம் dvex"
+    ) {
+      return DvexIntent.Conversation(rawText)
+    }
+
+    if (lower.contains("how are you") || lower.contains("epdi irukka") || lower.contains("epdi irukkeenga") ||
+        lower.contains("எப்படி இருக்கீங்க") || lower.contains("எப்படி இருக்கிறீர்கள்") || lower.contains("நலமா") ||
+        lower.contains("sowkiyama")
+    ) {
+      return DvexIntent.Conversation(rawText)
+    }
+
+    if (lower.contains("thank you") || lower == "thanks" || lower.contains("நன்றி") || lower.contains("மிக்க நன்றி") ||
+        lower.contains("romba nandri") || lower.contains("nandri")
+    ) {
+      return DvexIntent.Conversation(rawText)
+    }
+
+    if (lower.contains("what are you doing") || lower.contains("enna panra") || lower.contains("enna panreenga") ||
+        lower.contains("என்ன செய்கிறாய்") || lower.contains("என்ன செய்கிறீர்கள்") || lower.contains("என்ன பண்ற")
+    ) {
       return DvexIntent.Conversation(rawText)
     }
 
