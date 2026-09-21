@@ -76,7 +76,23 @@ class DvexSmartBrain(
 
         // Execute the confirmed sensitive action
         val executionResult = executeConfirmedAction(confirmedIntent)
-        val spoken = responseGenerator.generateResponse(confirmedIntent, executionResult, effectiveLang)
+        val tone = responseGenerator.estimateTone(rawInput)
+        val spoken = responseGenerator.generateResponse(
+          intent = confirmedIntent,
+          toolResult = executionResult,
+          language = effectiveLang,
+          userInput = rawInput,
+          context = conversationContext,
+          tone = tone
+        )
+        conversationContext.update(
+          input = rawInput,
+          intent = confirmedIntent,
+          toolResult = executionResult,
+          language = effectiveLang,
+          tone = tone,
+          spokenResponse = spoken
+        )
         Log.i(TAG_RESPONSE, spoken)
         return BrainExecutionResult(
           intent = confirmedIntent,
@@ -110,6 +126,14 @@ class DvexSmartBrain(
           message = cancelMessage,
           spokenText = cancelMessage
         )
+        conversationContext.update(
+          input = rawInput,
+          intent = DvexIntent.Conversation(rawInput),
+          toolResult = cancelResult,
+          language = effectiveLang,
+          tone = EstimatedTone.NEUTRAL,
+          spokenResponse = cancelMessage
+        )
         Log.i(TAG_RESPONSE, cancelMessage)
         return BrainExecutionResult(
           intent = DvexIntent.Conversation(rawInput),
@@ -133,23 +157,40 @@ class DvexSmartBrain(
 
     Log.i(TAG_INTENT, "$intent (confidence: $confidence, lang: $language)")
 
+    // 2.5 Estimate Tone
+    val tone = responseGenerator.estimateTone(rawInput)
+
     // 3. Tool Selection & Execution
     val toolResult = toolRouter.execute(intent, conversationContext)
     Log.i(TAG_RESULT, "Tool: ${toolResult.toolName} -> Status: ${toolResult.status}")
 
-    // 4. Update Conversation Context
-    conversationContext.update(rawInput, intent, toolResult, language)
+    // 4. Natural Response Generation (Internal Consideration: meaning, goal, context, tone, language)
+    val spokenResponse = responseGenerator.generateResponse(
+      intent = intent,
+      toolResult = toolResult,
+      language = language,
+      userInput = rawInput,
+      context = conversationContext,
+      tone = tone
+    )
+    Log.i(TAG_RESPONSE, spokenResponse)
 
-    // 5. Check if confirmation is required (Sensitive actions: Call, SMS, Email)
+    // 5. Update Conversation Context
+    conversationContext.update(
+      input = rawInput,
+      intent = intent,
+      toolResult = toolResult,
+      language = language,
+      tone = tone,
+      spokenResponse = spokenResponse
+    )
+
+    // 6. Check if confirmation is required (Sensitive actions: Call, SMS, Email)
     if (toolResult.requiresConfirmation) {
       activePendingIntent = intent
       activePendingId = toolResult.pendingActionId
       Log.i(TAG_BRAIN, "Armed pending confirmation for sensitive action: ${intent::class.simpleName}")
     }
-
-    // 6. Natural Response Generation
-    val spokenResponse = responseGenerator.generateResponse(intent, toolResult, language)
-    Log.i(TAG_RESPONSE, spokenResponse)
 
     return BrainExecutionResult(
       intent = intent,

@@ -2,11 +2,27 @@ package com.example.brain
 
 import java.util.LinkedList
 
+/**
+ * Coarse emotional and situational tone estimated from user speech.
+ * Used to adapt response phrasing without claiming emotional certainty.
+ */
+enum class EstimatedTone {
+  NEUTRAL,
+  HAPPY,
+  SAD,
+  FRUSTRATED,
+  URGENT,
+  CONFUSED,
+  EXCITED
+}
+
 data class ContextTurn(
   val userInput: String,
   val intent: DvexIntent,
   val toolName: String,
-  val timestamp: Long = System.currentTimeMillis()
+  val timestamp: Long = System.currentTimeMillis(),
+  val tone: EstimatedTone = EstimatedTone.NEUTRAL,
+  val language: DetectedLanguage = DetectedLanguage.ENGLISH
 )
 
 /**
@@ -36,14 +52,26 @@ class ConversationContext(private val maxHistorySize: Int = 6) {
   var lastContactRecipient: String? = null
     private set
 
+  var lastEstimatedTone: EstimatedTone = EstimatedTone.NEUTRAL
+    private set
+
+  var lastSpokenResponse: String? = null
+    private set
+
   fun update(
     input: String,
     intent: DvexIntent,
     toolResult: DvexToolResult,
-    language: DetectedLanguage
+    language: DetectedLanguage,
+    tone: EstimatedTone = EstimatedTone.NEUTRAL,
+    spokenResponse: String? = null
   ) {
     lastIntent = intent
     lastLanguage = language
+    lastEstimatedTone = tone
+    if (!spokenResponse.isNullOrBlank()) {
+      lastSpokenResponse = spokenResponse
+    }
 
     when (intent) {
       is DvexIntent.OpenApp -> {
@@ -79,9 +107,17 @@ class ConversationContext(private val maxHistorySize: Int = 6) {
         ContextTurn(
           userInput = input,
           intent = intent,
-          toolName = toolResult.toolName
+          toolName = toolResult.toolName,
+          tone = tone,
+          language = language
         )
       )
+    }
+  }
+
+  fun getRecentHistory(): List<ContextTurn> {
+    synchronized(history) {
+      return history.toList()
     }
   }
 
@@ -91,6 +127,17 @@ class ConversationContext(private val maxHistorySize: Int = 6) {
    */
   fun resolveContextualFollowUp(cleanInput: String): DvexIntent? {
     val lower = cleanInput.lowercase().trim().trimEnd('?', '.', '!')
+
+    // 0. Repeat last response if asked
+    if (lower == "repeat that" || lower == "say that again" || lower == "what did you say" ||
+        lower == "repeat" || lower == "say again" || lower == "enna sonna" ||
+        lower == "enna sonneenga" || lower == "marubadiyum sollu" || lower == "திரும்ப சொல்லு" ||
+        lower == "marupadiyum sollu") {
+      val lastMsg = lastSpokenResponse
+      if (!lastMsg.isNullOrBlank()) {
+        return DvexIntent.Conversation(lastMsg)
+      }
+    }
 
     // 1. Follow-up weather question (e.g. "Tomorrow?", "What about tomorrow?", "naalai", "naalaiku?")
     if (lower == "tomorrow" || lower == "what about tomorrow" || lower == "how about tomorrow" ||
@@ -152,5 +199,7 @@ class ConversationContext(private val maxHistorySize: Int = 6) {
     lastLanguage = DetectedLanguage.ENGLISH
     lastWeatherLocation = null
     lastContactRecipient = null
+    lastEstimatedTone = EstimatedTone.NEUTRAL
+    lastSpokenResponse = null
   }
 }

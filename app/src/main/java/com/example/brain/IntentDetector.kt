@@ -260,39 +260,8 @@ class IntentDetector {
         lower.startsWith("phone ")
 
     if (isCall) {
-      var recipient = rawText
-        .replace(Regex("^(can you please |can you |please )?call( to)?", RegexOption.IGNORE_CASE), "")
-        .replace(Regex("^(can you please |can you |please )?dial", RegexOption.IGNORE_CASE), "")
-        .replace(Regex("^(can you please |can you |please )?make a call to", RegexOption.IGNORE_CASE), "")
-        .replace(Regex("^(can you please |can you |please )?phone", RegexOption.IGNORE_CASE), "")
-        .replace("call pannunga", "", ignoreCase = true)
-        .replace("call pannu", "", ignoreCase = true)
-        .replace("call seiy", "", ignoreCase = true)
-        .replace("call podu", "", ignoreCase = true)
-        .replace("phone pannu", "", ignoreCase = true)
-        .replace("phone podu", "", ignoreCase = true)
-        .replace("கால் பண்ணுங்க", "")
-        .replace("கால் பண்ணு", "")
-        .replace("போன் பண்ணு", "")
-        .replace("கால் செய்", "")
-        .replace("போன் போடு", "")
-        .replace("கால் போடு", "")
-        .replace("அழைக்கவும்", "")
-        .replace("அழை", "")
-        .replace("பேச வேண்டும்", "")
-        .replace("பேசணும்", "")
-        .replace("ku call", "", ignoreCase = true)
-        .replace("ku phone", "", ignoreCase = true)
-        .replace("kitta call pannu", "", ignoreCase = true)
-        .replace("kitta call", "", ignoreCase = true)
-        .replace("kitta phone", "", ignoreCase = true)
-        .replace("va call pannu", "", ignoreCase = true)
-        .replace("va call", "", ignoreCase = true)
-        .trim()
-      while (recipient.endsWith(".") || recipient.endsWith("?") || recipient.endsWith("!")) {
-        recipient = recipient.substring(0, recipient.length - 1).trim()
-      }
-      return DvexIntent.CallContact(recipient.ifBlank { "contact" })
+      val recipient = cleanContactRecipient(rawText)
+      return DvexIntent.CallContact(recipient)
     }
 
     // WhatsApp commands
@@ -326,9 +295,9 @@ class IntentDetector {
         body = parts[1].trim()
       }
 
-      val cleanTarget = target.trimEnd('.', '?', '!', ' ')
+      val cleanTarget = cleanContactRecipient(target)
       val cleanBody = body?.trimEnd('.', '?', '!', ' ')
-      return DvexIntent.SendMessage(cleanTarget.ifBlank { "recipient" }, cleanBody, isWhatsApp = true)
+      return DvexIntent.SendMessage(cleanTarget, cleanBody, isWhatsApp = true)
     }
 
     // Message & Reply commands
@@ -389,9 +358,9 @@ class IntentDetector {
         body = parts[1].trim()
       }
 
-      val cleanTarget = target.trimEnd('.', '?', '!', ' ')
+      val cleanTarget = cleanContactRecipient(target)
       val cleanBody = body?.trimEnd('.', '?', '!', ' ')
-      return DvexIntent.SendMessage(cleanTarget.ifBlank { "recipient" }, cleanBody, isWhatsApp = false)
+      return DvexIntent.SendMessage(cleanTarget, cleanBody, isWhatsApp = false)
     }
 
     return null
@@ -794,7 +763,9 @@ class IntentDetector {
       "kelu", "kelunga", "pathu", "aama", "seri", "sari", "illa", "illai", "vendaam",
       "vendam", "adhu", "idhu", "kooda", "mela", "keela", "munnadi", "pinnaadi", "neram",
       "mani", "seiy", "seiya", "seiyunga", "seiren", "thambi", "dvex", "devex", "keka",
-      "kekuthu", "bathil", "solren", "konjam", "valkai", "approm", "ippo", "ippove"
+      "kekuthu", "bathil", "solren", "konjam", "valkai", "approm", "ippo", "ippove",
+      "dei", "da", "pa", "machan", "machi", "bro", "nanba", "nanbaa", "thala", "thalaiva",
+      "dosthu", "ku", "kku", "ah", "ya", "kitta", "kodu", "pesu"
     )
 
     val words = lower.split(Regex("[^a-zA-Z0-9]+")).filter { it.isNotBlank() }
@@ -850,10 +821,51 @@ class IntentDetector {
         break
       }
     }
+    // Also remove leading slang vocatives like "dei dvex" or "machan devex"
+    cleaned = cleaned.replace(Regex("^(dei|da|pa|machan|machi|bro|buddy|nanba|nanbaa|thala|thalaiva|dosthu)\\s+(d-vex|dvex|devex)\\b", RegexOption.IGNORE_CASE), "").trim()
+
     while (cleaned.endsWith(".") || cleaned.endsWith("?") || cleaned.endsWith("!")) {
       cleaned = cleaned.substring(0, cleaned.length - 1).trim()
     }
     return cleaned
+  }
+
+  /**
+   * Normalizes recipient names by removing leading vocatives, filler words,
+   * trailing action verbs, and Tamil/Tanglish case markers (dative, accusative, locative).
+   */
+  private fun cleanContactRecipient(raw: String): String {
+    var text = raw.trim()
+    // Strip leading conversational fillers, vocatives and polite requests
+    text = text.replace(Regex("^(dei|da|pa|machan|machi|bro|buddy|nanba|nanbaa|thala|thalaiva|dosthu)\\s+", RegexOption.IGNORE_CASE), "")
+    text = text.replace(Regex("^(can you please |can you |could you |please |konjam |தயவுசெய்து )", RegexOption.IGNORE_CASE), "")
+    text = text.replace(Regex("^(make a call to |make a call |call to |call |dial |phone to |phone )", RegexOption.IGNORE_CASE), "")
+
+    // Strip trailing verbs
+    text = text.replace(Regex("\\s*(call pannunga|call pannu|call podu|call seiy|phone pannunga|phone pannu|phone podu|call|dial)$", RegexOption.IGNORE_CASE), "")
+    text = text.replace(Regex("\\s*(கால் பண்ணுங்க|கால் பண்ணு|போன் பண்ணு|கால் செய்|போன் போடு|கால் போடு|அழைக்கவும்|அழை|பேச வேண்டும்|பேசணும்)$"), "")
+    text = text.replace(Regex("\\s*(message anuppu|message anupu|message pannu|msg anuppu|msg anupu|msg pannu|whatsapp anuppu|whatsapp pannu)$", RegexOption.IGNORE_CASE), "")
+    text = text.replace(Regex("\\s*(செய்தி அனுப்பு|மெசேஜ் அனுப்பு|அனுப்பு)$"), "")
+
+    // Strip Tamil/Tanglish case markers from recipient name:
+    // Dative: -ku, -kku, ku, kku
+    // Accusative: -ah, -ya, -ai, -a, ah, ya
+    // Locative: -kitta, kitta, -idam, idam
+    // Sociative: -oda, -udan
+    // Tamil script: -க்கு, க்கு, -ஐ, ஐ, -விடம், விடம்
+    text = text.replace(Regex("(-?kku|-?ku|-?kitta|-?idam|-?oda|-?udan)$", RegexOption.IGNORE_CASE), "")
+    text = text.replace(Regex("(-?ah|-?ya|-?ai|-?a)$", RegexOption.IGNORE_CASE), "")
+    text = text.replace(Regex("(-?க்கு|க்கு|-?ஐ|ஐ|-?விடம்|விடம்|-?உடன்|உடன்)$"), "")
+
+    // Strip dangling spaces and trailing single case particle words
+    text = text.replace(Regex("\\s+(ku|kku|ah|ya|a|kitta)$", RegexOption.IGNORE_CASE), "")
+
+    // Strip punctuation and residual noise
+    text = text.trimEnd('.', '?', '!', ',', ' ')
+      .trimStart('.', '?', '!', ',', ' ')
+      .trim()
+
+    return text.ifBlank { "contact" }
   }
 
   companion object {
