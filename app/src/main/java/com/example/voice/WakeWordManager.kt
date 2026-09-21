@@ -139,8 +139,21 @@ class AndroidSpeechWakeWordDetector(
     }
 
     try {
+      if (!SpeechRecognizer.isRecognitionAvailable(context)) {
+        Log.w(TAG, "Speech recognition service is unavailable on this device")
+        onErrorCallback?.invoke("Speech recognition service not available.")
+        return
+      }
+
       if (speechRecognizer == null) {
-        speechRecognizer = SpeechRecognizer.createSpeechRecognizer(context).apply {
+        val created = SpeechRecognizer.createSpeechRecognizer(context)
+        if (created == null) {
+          Log.w(TAG, "SpeechRecognizer could not be created (returned null)")
+          onErrorCallback?.invoke("Speech recognizer unavailable on this device.")
+          return
+        }
+
+        speechRecognizer = created.apply {
           setRecognitionListener(object : RecognitionListener {
             override fun onReadyForSpeech(params: Bundle?) {
               Log.d(TAG, "Wake-word engine ready for speech")
@@ -210,6 +223,12 @@ class AndroidSpeechWakeWordDetector(
         }
       }
 
+      val activeRecognizer = speechRecognizer
+      if (activeRecognizer == null) {
+        Log.w(TAG, "SpeechRecognizer is null; cannot start wake-word session")
+        return
+      }
+
       isSessionActive = true
       val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
         putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
@@ -219,7 +238,7 @@ class AndroidSpeechWakeWordDetector(
         putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 5000L)
         putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS, 2000L)
       }
-      speechRecognizer?.startListening(intent)
+      activeRecognizer.startListening(intent)
     } catch (e: Exception) {
       isSessionActive = false
       Log.e(TAG, "Error starting wake-word speech session", e)

@@ -160,22 +160,16 @@ open class DvexFloatingOrbService : Service() {
     val notification = buildNotification(assistantRepo.assistantState.value)
     try {
       if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-        val fgType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+        startForeground(
+          NOTIFICATION_ID_ORB,
+          notification,
           ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
-        } else {
-          0
-        }
-        startForeground(NOTIFICATION_ID_ORB, notification, fgType)
+        )
       } else {
         startForeground(NOTIFICATION_ID_ORB, notification)
       }
     } catch (e: Exception) {
-      Log.e(TAG, "Foreground start failed for orb service, attempting fallback", e)
-      try {
-        startForeground(NOTIFICATION_ID_ORB, notification)
-      } catch (ex: Exception) {
-        Log.e(TAG, "Secondary startForeground failed", ex)
-      }
+      Log.w(TAG, "Foreground start failed or restricted for orb service: ${e.message}")
     }
   }
 

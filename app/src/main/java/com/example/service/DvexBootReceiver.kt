@@ -34,13 +34,8 @@ class DvexBootReceiver : BroadcastReceiver() {
         return
       }
 
-      // Check audio permission before starting foreground assistant
-      if (DvexPermissionManager.hasAudioPermission(context)) {
-        Log.i(TAG, "Audio permission valid. Restoring DvexAssistantService on boot.")
-        DvexAssistantService.start(context)
-      } else {
-        Log.w(TAG, "Audio permission missing after boot. Cannot auto-start microphone foreground service.")
-      }
+      // Per Android while-in-use FGS restrictions, microphone foreground service is NOT started from background boot/update.
+      // It will start only from an allowed visible/user-initiated foreground state when the app is opened.
 
       // Check overlay permission before restoring floating orb
       if (settings.floatingOrbEnabled && DvexPermissionManager.hasOverlayPermission(context)) {

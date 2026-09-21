@@ -18,4 +18,19 @@ class ExampleRobolectricTest {
     val appName = context.getString(R.string.app_name)
     assertEquals("D-VEX", appName)
   }
+
+  @Test
+  fun `launch MainActivity test`() {
+    val controller = org.robolectric.Robolectric.buildActivity(MainActivity::class.java)
+    controller.create().start().resume()
+  }
+
+  @Test
+  fun `launch MainActivity with audio permission test`() {
+    val app = ApplicationProvider.getApplicationContext<android.app.Application>()
+    val shadowApp = org.robolectric.Shadows.shadowOf(app)
+    shadowApp.grantPermissions(android.Manifest.permission.RECORD_AUDIO)
+    val controller = org.robolectric.Robolectric.buildActivity(MainActivity::class.java)
+    controller.create().start().resume()
+  }
 }

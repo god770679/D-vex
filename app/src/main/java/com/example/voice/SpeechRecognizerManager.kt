@@ -79,7 +79,17 @@ class SpeechRecognizerManager(private val context: Context) {
         mainHandler.removeCallbacks(timeoutRunnable)
         mainHandler.postDelayed(timeoutRunnable, 8000)
 
-        speechRecognizer = SpeechRecognizer.createSpeechRecognizer(context).apply {
+        val createdRecognizer = SpeechRecognizer.createSpeechRecognizer(context)
+        if (createdRecognizer == null) {
+          Log.w(TAG, "SpeechRecognizer is unavailable on this device")
+          _isListening.value = false
+          isSessionActive = false
+          mainHandler.removeCallbacks(timeoutRunnable)
+          onErrorCallback?.invoke("Speech recognition service not available.")
+          return@post
+        }
+
+        speechRecognizer = createdRecognizer.apply {
           setRecognitionListener(object : RecognitionListener {
             override fun onReadyForSpeech(params: Bundle?) {
               Log.d(TAG, "Ready for speech input")

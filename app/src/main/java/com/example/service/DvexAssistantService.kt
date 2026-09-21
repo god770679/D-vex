@@ -51,7 +51,11 @@ class DvexAssistantService : Service() {
       return START_NOT_STICKY
     }
 
-    startAsForeground()
+    val foregroundStarted = startAsForeground()
+    if (!foregroundStarted) {
+      Log.w(TAG, "Microphone FGS could not be legally started. Stopping service gracefully.")
+      return START_NOT_STICKY
+    }
 
     // Coordinate Floating Orb
     val settings = assistantRepo.settings.value
@@ -75,23 +79,33 @@ class DvexAssistantService : Service() {
     return START_STICKY
   }
 
-  private fun startAsForeground() {
+  private fun startAsForeground(): Boolean {
     val notification = buildNotification(assistantRepo.assistantState.value)
-    try {
+    return try {
       if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-        // Use MICROPHONE type if supported and declared
-        val fgType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+        // Must specify FOREGROUND_SERVICE_TYPE_MICROPHONE when declared in manifest
+        startForeground(
+          NOTIFICATION_ID,
+          notification,
           ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
-        } else {
-          0
-        }
-        startForeground(NOTIFICATION_ID, notification, fgType)
+        )
       } else {
         startForeground(NOTIFICATION_ID, notification)
       }
+      true
     } catch (e: Exception) {
-      Log.e(TAG, "Foreground start failed, falling back", e)
-      startForeground(NOTIFICATION_ID, notification)
+      // Handles ForegroundServiceStartNotAllowedException, SecurityException, and MissingForegroundServiceTypeException
+      Log.e(TAG, "Microphone foreground service start failed or restricted: ${e.message}", e)
+      try {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+          stopForeground(STOP_FOREGROUND_REMOVE)
+        } else {
+          @Suppress("DEPRECATION")
+          stopForeground(true)
+        }
+      } catch (_: Exception) {}
+      stopSelf()
+      false
     }
   }
 
@@ -174,11 +188,16 @@ class DvexAssistantService : Service() {
     const val ACTION_STOP_SERVICE = "com.example.dvex.ACTION_STOP_SERVICE"
 
     fun start(context: Context) {
-      val intent = Intent(context, DvexAssistantService::class.java)
-      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-        context.startForegroundService(intent)
-      } else {
-        context.startService(intent)
+      try {
+        val intent = Intent(context, DvexAssistantService::class.java)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+          context.startForegroundService(intent)
+        } else {
+          context.startService(intent)
+        }
+      } catch (e: Exception) {
+        // Safely catches ForegroundServiceStartNotAllowedException, SecurityException, etc.
+        Log.w(TAG, "Cannot start DvexAssistantService from current state: ${e.message}")
       }
     }
 

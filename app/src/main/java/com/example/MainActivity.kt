@@ -153,6 +153,15 @@ class MainActivity : ComponentActivity() {
     }
   }
 
+  override fun onResume() {
+    super.onResume()
+    val currentSettings = viewModel.settings.value
+    // Start microphone foreground service only from an allowed visible foreground state
+    if (currentSettings.alwaysReadyEnabled && DvexPermissionManager.hasAudioPermission(this)) {
+      DvexAssistantService.start(this)
+    }
+  }
+
   override fun onStart() {
     super.onStart()
     val currentSettings = viewModel.settings.value
@@ -160,11 +169,6 @@ class MainActivity : ComponentActivity() {
     // Start passive wake-word listening in foreground if enabled and audio permission is granted
     if (currentSettings.wakeWordEnabled && DvexPermissionManager.hasAudioPermission(this)) {
       viewModel.startWakeWordListening()
-    }
-
-    // Ensure Always-Ready foreground service is running if authorized
-    if (currentSettings.alwaysReadyEnabled && DvexPermissionManager.hasAudioPermission(this)) {
-      DvexAssistantService.start(this)
     }
 
     // Ensure system-wide floating overlay is running if authorized
@@ -179,9 +183,6 @@ class MainActivity : ComponentActivity() {
     val currentSettings = viewModel.settings.value
     if (currentSettings.floatingOrbEnabled && DvexPermissionManager.hasOverlayPermission(this)) {
       DvexFloatingOrbService.start(this)
-    }
-    if (currentSettings.alwaysReadyEnabled && DvexPermissionManager.hasAudioPermission(this)) {
-      DvexAssistantService.start(this)
     }
   }
 }
