@@ -155,6 +155,10 @@ class AssistantRepository private constructor(private val context: Context) {
       return
     }
     if (_settings.value.wakeWordEnabled) {
+      if (wakeWordManager.isRunning()) {
+        Log.d(TAG_WAKE, "Wake-word manager already active; skipping duplicate start")
+        return
+      }
       _assistantState.value = DvexAssistantState.WakeWordListening
       wakeWordManager.start()
     } else {
@@ -273,40 +277,52 @@ class AssistantRepository private constructor(private val context: Context) {
     speechRecognizer.startListening(
       onResult = { recognizedText ->
         cancelStateWatchdog()
-        val norm = recognizedText.lowercase(Locale.ROOT).trim()
+        val clean = recognizedText.trim()
+        if (clean.isBlank()) {
+          Log.i(TAG_STT, "Empty recognized text; silently returning to Standby")
+          _assistantState.value = DvexAssistantState.Standby
+          _latestTranscript.value = ""
+          returnToRestState()
+          return@startListening
+        }
+
+        val norm = clean.lowercase(Locale.ROOT)
         // Prevent responding to self-echo from wake confirmation response
         if (norm == "yes sir" || norm.contains("சொல்லுங்க") || norm.contains("sollunga") || norm == "yes sir சொல்லுங்க" || norm == "yes, sir.") {
-          Log.d(TAG_STT, "Ignored self-echo from confirmation response: $recognizedText")
+          Log.d(TAG_STT, "Ignored self-echo from confirmation response: $clean")
           startListeningForCommand(preferredLanguage)
           return@startListening
         }
-        _latestTranscript.value = recognizedText
-        processCommand(recognizedText)
+        _latestTranscript.value = clean
+        processCommand(clean)
       },
       onError = { error ->
         cancelStateWatchdog()
         Log.w(TAG_STT, "SpeechRecognizer returned error: $error")
-        val isSilenceOrTimeout = error.contains("timed out", ignoreCase = true) ||
+        val isSilenceOrEmpty = error == "EMPTY_SPEECH" ||
+            error.contains("timed out", ignoreCase = true) ||
             error.contains("No speech", ignoreCase = true) ||
             error.contains("No match", ignoreCase = true) ||
             error.contains("No clear command", ignoreCase = true) ||
             error.contains("Client error", ignoreCase = true) ||
             error.contains("empty", ignoreCase = true)
 
-        if (isSilenceOrTimeout) {
-          // Timeout or silence with no command: cleanly end listening and return to STANDBY without error prompts
-          Log.i(TAG_STT, "Silence or timeout with no command; returning cleanly to STANDBY without error prompts")
+        if (isSilenceOrEmpty) {
+          // Empty/no speech -> silently return to STANDBY without sending to brain or saying anything
+          Log.i(TAG_STT, "Silence or empty speech; silently returning to STANDBY without error prompts")
           _assistantState.value = DvexAssistantState.Standby
-          _latestResponse.value = "Standing by, Sir."
+          _latestResponse.value = ""
+          _latestTranscript.value = ""
           scope.launch {
-            delay(300)
+            delay(250)
             returnToRestState()
           }
         } else {
-          _assistantState.value = DvexAssistantState.Error(error)
+          _assistantState.value = DvexAssistantState.Standby
+          _latestResponse.value = ""
           scope.launch {
-            delay(400)
-            respondWith("Sorry, I didn't catch that, Sir.")
+            delay(300)
+            returnToRestState()
           }
         }
       },
@@ -324,11 +340,20 @@ class AssistantRepository private constructor(private val context: Context) {
   }
 
   fun processCommand(command: String) {
+    val clean = command.trim()
+    if (clean.isBlank()) {
+      Log.i(TAG_AI, "Ignoring blank command; silently returning to Standby")
+      _assistantState.value = DvexAssistantState.Standby
+      _latestTranscript.value = ""
+      returnToRestState()
+      return
+    }
+
     scope.launch {
       cancelStateWatchdog()
       _assistantState.value = DvexAssistantState.Processing
-      _latestTranscript.value = command
-      Log.i(TAG_AI, "Processing command via D-VEX Smart Brain: \"$command\"")
+      _latestTranscript.value = clean
+      Log.i(TAG_AI, "Processing command via D-VEX Smart Brain: \"$clean\"")
 
       // Arm 10-second processing watchdog
       armStateWatchdog(10000, "Processing timeout")
@@ -796,11 +821,13 @@ class AssistantRepository private constructor(private val context: Context) {
     cancelStateWatchdog()
     _assistantState.value = DvexAssistantState.Standby
     if (_settings.value.wakeWordEnabled && DvexPermissionManager.hasAudioPermission(context)) {
-      Log.i(TAG_VOICE, "Returned to standby (passive wake-word listening re-armed)")
+      Log.i(TAG_VOICE, "Returned to standby (passive wake-word listening re-arming)")
       scope.launch {
-        delay(350)
+        delay(400)
         wakeWordManager.setAudioSuppressed(false)
-        wakeWordManager.start()
+        if (!wakeWordManager.isRunning()) {
+          wakeWordManager.start()
+        }
       }
     } else {
       Log.i(TAG_VOICE, "Returned to standby")

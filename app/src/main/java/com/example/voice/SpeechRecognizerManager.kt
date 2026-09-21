@@ -26,6 +26,7 @@ class SpeechRecognizerManager(private val context: Context) {
 
   private val _isListening = MutableStateFlow(false)
   val isListening: StateFlow<Boolean> = _isListening.asStateFlow()
+  @Volatile private var isSessionActive = false
 
   private val _rmsDb = MutableStateFlow(0f)
   val rmsDb: StateFlow<Float> = _rmsDb.asStateFlow()
@@ -36,10 +37,11 @@ class SpeechRecognizerManager(private val context: Context) {
 
   // Watchdog timeout runnable in case speech recognizer hangs or user remains silent
   private val timeoutRunnable = Runnable {
-    if (_isListening.value) {
+    if (_isListening.value || isSessionActive) {
       Log.w(TAG, "Speech recognition watchdog timed out")
       _isListening.value = false
-      onErrorCallback?.invoke("Speech input timed out")
+      isSessionActive = false
+      onErrorCallback?.invoke("EMPTY_SPEECH")
       stopListening()
     }
   }
@@ -62,10 +64,16 @@ class SpeechRecognizerManager(private val context: Context) {
 
     mainHandler.post {
       try {
-        destroyRecognizer()
+        if (isSessionActive) {
+          Log.w(TAG, "Previous session still active; destroying before starting new session")
+          destroyRecognizer()
+        } else {
+          destroyRecognizer()
+        }
 
         Log.i(TAG, "Listening started")
         _isListening.value = true
+        isSessionActive = true
 
         // 8-second safety watchdog
         mainHandler.removeCallbacks(timeoutRunnable)
@@ -92,40 +100,41 @@ class SpeechRecognizerManager(private val context: Context) {
 
             override fun onEndOfSpeech() {
               Log.d(TAG, "End of speech detected")
-              _isListening.value = false
               mainHandler.removeCallbacks(timeoutRunnable)
             }
 
             override fun onError(error: Int) {
               mainHandler.removeCallbacks(timeoutRunnable)
               _isListening.value = false
+              isSessionActive = false
               val errorMsg = when (error) {
                 SpeechRecognizer.ERROR_AUDIO -> "Audio recording error"
                 SpeechRecognizer.ERROR_CLIENT -> "Client error"
                 SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS -> "Insufficient audio permissions"
                 SpeechRecognizer.ERROR_NETWORK -> "Network connection error"
                 SpeechRecognizer.ERROR_NETWORK_TIMEOUT -> "Network timed out"
-                SpeechRecognizer.ERROR_NO_MATCH -> "No speech detected"
+                SpeechRecognizer.ERROR_NO_MATCH -> "EMPTY_SPEECH"
                 SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> "Speech recognizer busy"
                 SpeechRecognizer.ERROR_SERVER -> "Recognition server error"
-                SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> "Speech input timed out"
+                SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> "EMPTY_SPEECH"
                 else -> "Recognition error ($error)"
               }
-              Log.w(TAG, "Error: $errorMsg")
+              Log.w(TAG, "SpeechRecognizer error: $errorMsg ($error)")
               onErrorCallback?.invoke(errorMsg)
             }
 
             override fun onResults(results: Bundle?) {
               mainHandler.removeCallbacks(timeoutRunnable)
               _isListening.value = false
+              isSessionActive = false
               val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
               val recognizedText = matches?.firstOrNull()?.trim().orEmpty()
-              if (recognizedText.isNotEmpty()) {
+              if (recognizedText.isNotBlank()) {
                 Log.i(TAG, "Final text: $recognizedText")
                 onResultCallback?.invoke(recognizedText)
               } else {
-                Log.w(TAG, "No clear command recognized (silence)")
-                onErrorCallback?.invoke("No speech detected")
+                Log.i(TAG, "Empty or blank recognition result")
+                onErrorCallback?.invoke("EMPTY_SPEECH")
               }
             }
 
@@ -207,9 +216,12 @@ class SpeechRecognizerManager(private val context: Context) {
     try {
       speechRecognizer?.cancel()
       speechRecognizer?.destroy()
-      speechRecognizer = null
     } catch (e: Exception) {
       Log.e(TAG, "Error destroying speech recognizer", e)
+    } finally {
+      speechRecognizer = null
+      isSessionActive = false
+      _isListening.value = false
     }
   }
 

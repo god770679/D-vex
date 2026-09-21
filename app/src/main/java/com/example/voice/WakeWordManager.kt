@@ -41,7 +41,8 @@ class AndroidSpeechWakeWordDetector(
   override val name: String = "Android Speech Trigger Engine (Local)"
 
   private var speechRecognizer: SpeechRecognizer? = null
-  private var isListening = false
+  @Volatile private var isListening = false
+  @Volatile private var isSessionActive = false
   private var onTriggerCallback: ((String) -> Unit)? = null
   private var onErrorCallback: ((String) -> Unit)? = null
   private val mainHandler = Handler(Looper.getMainLooper())
@@ -51,6 +52,12 @@ class AndroidSpeechWakeWordDetector(
   @Volatile private var isAudioSuppressed = false
   @Volatile private var lastSpokenText = ""
   @Volatile private var lastSpokenTimestampMs = 0L
+
+  private val restartRunnable = Runnable {
+    if (isListening && !isSessionActive) {
+      initAndListen()
+    }
+  }
 
   fun setKeyword(newKeyword: String) {
     this.keyword = newKeyword
@@ -78,11 +85,20 @@ class AndroidSpeechWakeWordDetector(
 
     onTriggerCallback = onTrigger
     onErrorCallback = onError
+
+    // Prevent duplicate restart loops or multiple concurrent recognizers
+    if (isListening) {
+      Log.d(TAG, "WakeWordDetector is already active; ignoring redundant start()")
+      return
+    }
+
     isListening = true
-    mainHandler.removeCallbacksAndMessages(null)
+    mainHandler.removeCallbacks(restartRunnable)
 
     mainHandler.post {
-      initAndListen()
+      if (isListening && !isSessionActive) {
+        initAndListen()
+      }
     }
   }
 
@@ -108,108 +124,138 @@ class AndroidSpeechWakeWordDetector(
     }
     lastTriggerTimeMs = now
     Log.i(TAG, "D-VEX wake-word triggered by phrase: \"$phrase\"")
-    isListening = false
-    mainHandler.removeCallbacksAndMessages(null)
-    try {
-      speechRecognizer?.stopListening()
-      speechRecognizer?.cancel()
-      speechRecognizer?.destroy()
-      speechRecognizer = null
-    } catch (e: Exception) {
-      Log.w(TAG, "Error releasing wake-word recognizer", e)
-    }
+
+    // Release recognizer immediately so command recognizer does not collide on microphone
+    stopInternal()
+
     onTriggerCallback?.invoke(phrase)
   }
 
   private fun initAndListen() {
     if (!isListening) return
+    if (isSessionActive) {
+      Log.d(TAG, "Speech session already active; skipping duplicate startListening()")
+      return
+    }
 
     try {
       if (speechRecognizer == null) {
-        speechRecognizer = SpeechRecognizer.createSpeechRecognizer(context)
-
-        speechRecognizer?.setRecognitionListener(object : RecognitionListener {
-          override fun onReadyForSpeech(params: Bundle?) {}
-          override fun onBeginningOfSpeech() {}
-          override fun onRmsChanged(rmsdB: Float) {}
-          override fun onBufferReceived(buffer: ByteArray?) {}
-          override fun onEndOfSpeech() {}
-
-          override fun onError(error: Int) {
-            try {
-              speechRecognizer?.cancel()
-            } catch (e: Exception) {}
-
-            if (error == SpeechRecognizer.ERROR_RECOGNIZER_BUSY ||
-                error == SpeechRecognizer.ERROR_CLIENT ||
-                error == SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS
-            ) {
-              try {
-                speechRecognizer?.destroy()
-                speechRecognizer = null
-              } catch (e: Exception) {}
+        speechRecognizer = SpeechRecognizer.createSpeechRecognizer(context).apply {
+          setRecognitionListener(object : RecognitionListener {
+            override fun onReadyForSpeech(params: Bundle?) {
+              Log.d(TAG, "Wake-word engine ready for speech")
             }
+            override fun onBeginningOfSpeech() {}
+            override fun onRmsChanged(rmsdB: Float) {}
+            override fun onBufferReceived(buffer: ByteArray?) {}
+            override fun onEndOfSpeech() {}
 
-            if (isListening) {
-              val delayMs = if (error == SpeechRecognizer.ERROR_NO_MATCH || error == SpeechRecognizer.ERROR_SPEECH_TIMEOUT) {
-                800L
-              } else {
-                1200L
+            override fun onError(error: Int) {
+              isSessionActive = false
+              Log.d(TAG, "Wake-word recognizer ended with error: $error")
+
+              if (!isListening) return
+
+              if (error == SpeechRecognizer.ERROR_RECOGNIZER_BUSY ||
+                  error == SpeechRecognizer.ERROR_CLIENT ||
+                  error == SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS
+              ) {
+                destroyRecognizerInternal()
               }
-              mainHandler.postDelayed({
-                if (isListening) initAndListen()
-              }, delayMs)
-            }
-          }
 
-          override fun onResults(results: Bundle?) {
-            val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-            if (!matches.isNullOrEmpty()) {
-              for (phrase in matches) {
-                if (matchesWakeWord(phrase)) {
-                  handleDetectedWakeWord(phrase)
-                  return
+              // Backoff delay before next session to avoid rapid-fire restarts / audio clicks
+              val delayMs = when (error) {
+                SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> 2500L
+                SpeechRecognizer.ERROR_CLIENT -> 2000L
+                SpeechRecognizer.ERROR_SPEECH_TIMEOUT,
+                SpeechRecognizer.ERROR_NO_MATCH -> 1200L
+                else -> 1800L
+              }
+              scheduleRestart(delayMs)
+            }
+
+            override fun onResults(results: Bundle?) {
+              isSessionActive = false
+              if (!isListening) return
+
+              val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+              if (!matches.isNullOrEmpty()) {
+                for (phrase in matches) {
+                  if (matchesWakeWord(phrase)) {
+                    handleDetectedWakeWord(phrase)
+                    return
+                  }
+                }
+              }
+
+              // Passive continuous listening restart
+              scheduleRestart(1000L)
+            }
+
+            override fun onPartialResults(partialResults: Bundle?) {
+              if (!isListening) return
+              val matches = partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+              if (!matches.isNullOrEmpty()) {
+                for (phrase in matches) {
+                  if (matchesWakeWord(phrase)) {
+                    handleDetectedWakeWord(phrase)
+                    return
+                  }
                 }
               }
             }
-            try {
-              speechRecognizer?.cancel()
-            } catch (e: Exception) {}
-            if (isListening) {
-              mainHandler.postDelayed({
-                if (isListening) initAndListen()
-              }, 800L)
-            }
-          }
 
-          override fun onPartialResults(partialResults: Bundle?) {
-            val matches = partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-            if (!matches.isNullOrEmpty()) {
-              for (phrase in matches) {
-                if (matchesWakeWord(phrase)) {
-                  handleDetectedWakeWord(phrase)
-                  return
-                }
-              }
-            }
-          }
-
-          override fun onEvent(eventType: Int, params: Bundle?) {}
-        })
+            override fun onEvent(eventType: Int, params: Bundle?) {}
+          })
+        }
       }
 
+      isSessionActive = true
       val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
         putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
         putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
-        putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 5)
-        putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 6000L)
-        putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 6000L)
-        putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS, 3000L)
+        putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 3)
+        putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 5000L)
+        putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 5000L)
+        putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS, 2000L)
       }
       speechRecognizer?.startListening(intent)
     } catch (e: Exception) {
-      Log.e(TAG, "Error in speech wake-word engine", e)
-      onErrorCallback?.invoke(e.localizedMessage ?: "Wake-word listener error")
+      isSessionActive = false
+      Log.e(TAG, "Error starting wake-word speech session", e)
+      destroyRecognizerInternal()
+      scheduleRestart(2000L)
+    }
+  }
+
+  private fun scheduleRestart(delayMs: Long) {
+    mainHandler.removeCallbacks(restartRunnable)
+    if (isListening && !isSessionActive) {
+      mainHandler.postDelayed(restartRunnable, delayMs)
+    }
+  }
+
+  override fun stop() {
+    stopInternal()
+  }
+
+  private fun stopInternal() {
+    isListening = false
+    isSessionActive = false
+    mainHandler.removeCallbacks(restartRunnable)
+    mainHandler.removeCallbacksAndMessages(null)
+    destroyRecognizerInternal()
+  }
+
+  private fun destroyRecognizerInternal() {
+    try {
+      speechRecognizer?.cancel()
+      speechRecognizer?.destroy()
+    } catch (e: Exception) {
+      Log.w(TAG, "Error destroying wake-word speech recognizer", e)
+    } finally {
+      speechRecognizer = null
+      isSessionActive = false
     }
   }
 
@@ -254,21 +300,6 @@ class AndroidSpeechWakeWordDetector(
     return false
   }
 
-  override fun stop() {
-    isListening = false
-    mainHandler.removeCallbacksAndMessages(null)
-    mainHandler.post {
-      try {
-        speechRecognizer?.stopListening()
-        speechRecognizer?.cancel()
-        speechRecognizer?.destroy()
-        speechRecognizer = null
-      } catch (e: Exception) {
-        Log.e(TAG, "Error stopping wake-word engine", e)
-      }
-    }
-  }
-
   override fun isRunning(): Boolean = isListening
 
   companion object {
@@ -289,6 +320,8 @@ class WakeWordManager(
   val state: StateFlow<WakeWordState> = _state.asStateFlow()
 
   private var onTriggerListener: ((String) -> Unit)? = null
+
+  fun isRunning(): Boolean = detector.isRunning()
 
   fun setOnTriggerListener(listener: (String) -> Unit) {
     this.onTriggerListener = listener

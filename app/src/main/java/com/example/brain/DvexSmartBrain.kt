@@ -45,6 +45,18 @@ class DvexSmartBrain(
   suspend fun process(rawInput: String): BrainExecutionResult {
     Log.i(TAG_BRAIN, "Input: $rawInput")
 
+    if (rawInput.isBlank()) {
+      Log.i(TAG_BRAIN, "Empty input provided to brain; returning silent standby result")
+      return BrainExecutionResult(
+        intent = DvexIntent.Conversation(""),
+        toolResult = DvexToolResult(DvexToolStatus.SUCCESS, "standby", "", ""),
+        spokenText = "",
+        displayText = "",
+        language = conversationContext.lastLanguage,
+        toolName = "standby"
+      )
+    }
+
     val lower = rawInput.lowercase(Locale.ROOT).trim()
 
     // 1. Check for confirmation responses if a sensitive action is currently pending
