@@ -216,6 +216,8 @@ class DvexSmartBrain(
     activePendingId = null
   }
 
+  fun hasPendingConfirmation(): Boolean = activePendingIntent != null
+
   private fun isAffirmative(lower: String): Boolean {
     val clean = lower.trimEnd('.', '?', '!', ',').trim()
     return clean == "yes" || clean == "confirm" || clean == "call" ||

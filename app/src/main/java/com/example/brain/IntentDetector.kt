@@ -111,8 +111,22 @@ class IntentDetector {
       return DetectionResult(conversationIntent, 0.88f, language, cleanText)
     }
 
-    // Fallback: Default to Conversation / General Question
-    return DetectionResult(DvexIntent.GeneralQuestion(cleanText), 0.70f, language, cleanText)
+    // Fallback: Check if user is asking a factual question or making a conversational remark
+    val isQuestion = lower.endsWith("?") ||
+        lower.startsWith("what ") || lower.startsWith("who ") ||
+        lower.startsWith("why ") || lower.startsWith("how ") ||
+        lower.startsWith("when ") || lower.startsWith("where ") ||
+        lower.startsWith("which ") || lower.startsWith("explain ") ||
+        lower.startsWith("define ") || lower.contains("meaning of") ||
+        lower.contains("எப்படி") || lower.contains("எங்கே") ||
+        lower.contains("எப்போது") || lower.contains("ஏன்") ||
+        lower.contains("என்ன ")
+
+    if (isQuestion) {
+      return DetectionResult(DvexIntent.GeneralQuestion(cleanText), 0.75f, language, cleanText)
+    }
+
+    return DetectionResult(DvexIntent.Conversation(cleanText), 0.70f, language, cleanText)
   }
 
   // --- Multi-Step Commands ---
@@ -237,9 +251,20 @@ class IntentDetector {
       return DvexIntent.SendEmail(cleanTarget.ifBlank { "recipient" }, subject, body)
     }
 
-    // Call commands
-    val isCall = lower.startsWith("call ") ||
+    // Check if input is non-call query containing 'call'
+    val isNotCallAction = lower.contains("what do you call") ||
+        lower.contains("what should i call") ||
+        lower.contains("what to call") ||
+        lower.contains("recall")
+
+    // Call commands (handles "hari ku call pannu", "hari ah call", "dei hari ku call pannu", etc.)
+    val isCall = !isNotCallAction && (
+        lower.startsWith("call ") ||
         lower.startsWith("dial ") ||
+        lower.endsWith(" call") ||
+        lower.endsWith(" dial") ||
+        lower.contains(" call ") ||
+        lower.contains(" dial ") ||
         lower.contains("call pannu") ||
         lower.contains("call pannunga") ||
         lower.contains("call seiy") ||
@@ -255,9 +280,11 @@ class IntentDetector {
         lower.contains("அழை") ||
         lower.contains("பேச வேண்டும்") ||
         lower.contains("பேசணும்") ||
+        lower.contains("pesanum") ||
         lower == "call" ||
         lower.startsWith("make a call to ") ||
         lower.startsWith("phone ")
+    )
 
     if (isCall) {
       val recipient = cleanContactRecipient(rawText)
@@ -720,6 +747,48 @@ class IntentDetector {
       return DvexIntent.Conversation(rawText)
     }
 
+    // Emotional state / casual conversational expressions
+    if (lower.contains("kaduppa") || lower.contains("kaduppu") || lower.contains("erichal") ||
+        lower.contains("frustrated") || lower.contains("irritat") || lower.contains("ennada idhu") ||
+        lower.contains("கடுப்பு") || lower.contains("எரிச்சல்")
+    ) {
+      return DvexIntent.Conversation(rawText)
+    }
+
+    if (lower.contains("sogama") || lower.contains("kashtama") || lower.contains("feeling sad") ||
+        lower.contains("feeling down") || lower.contains("depressed") || lower.contains("bad day") ||
+        lower.contains("சோகம்") || lower.contains("கஷ்டமா") || lower.contains("vali thaangala")
+    ) {
+      return DvexIntent.Conversation(rawText)
+    }
+
+    if (lower.contains("vera level") || lower.contains("mass") || lower.contains("awesome") ||
+        lower.contains("excited") || lower.contains("வேற லெவல்") || lower.contains("marana mass")
+    ) {
+      return DvexIntent.Conversation(rawText)
+    }
+
+    if (lower.contains("puriyala") || lower.contains("purila") || lower.contains("confused") ||
+        lower.contains("dont understand") || lower.contains("don't understand") || lower.contains("புரியவில்லை")
+    ) {
+      return DvexIntent.Conversation(rawText)
+    }
+
+    if (lower.contains("bye") || lower.contains("good night") || lower.contains("good morning") ||
+        lower.contains("see you") || lower.contains("take care") || lower.contains("poi vaaren") ||
+        lower.contains("கிளம்புறேன்")
+    ) {
+      return DvexIntent.Conversation(rawText)
+    }
+
+    if (lower == "dei" || lower == "da" || lower == "machi" || lower == "machan" ||
+        lower == "bro" || lower == "nanba" || lower == "thalaiva" || lower == "seri" ||
+        lower == "sari" || lower == "okay" || lower == "ok" || lower == "sure" ||
+        lower == "got it" || lower == "nice"
+    ) {
+      return DvexIntent.Conversation(rawText)
+    }
+
     if (lower.startsWith("explain ") || lower.startsWith("tell me a joke") ||
         lower.startsWith("how to ") || lower.startsWith("why is ") || lower.startsWith("what is ")
     ) {
@@ -842,7 +911,7 @@ class IntentDetector {
     text = text.replace(Regex("^(make a call to |make a call |call to |call |dial |phone to |phone )", RegexOption.IGNORE_CASE), "")
 
     // Strip trailing verbs
-    text = text.replace(Regex("\\s*(call pannunga|call pannu|call podu|call seiy|phone pannunga|phone pannu|phone podu|call|dial)$", RegexOption.IGNORE_CASE), "")
+    text = text.replace(Regex("\\s*(call pannunga|call pannu|call podu|call seiy|phone pannunga|phone pannu|phone podu|pesanum|pesu|call|dial)$", RegexOption.IGNORE_CASE), "")
     text = text.replace(Regex("\\s*(கால் பண்ணுங்க|கால் பண்ணு|போன் பண்ணு|கால் செய்|போன் போடு|கால் போடு|அழைக்கவும்|அழை|பேச வேண்டும்|பேசணும்)$"), "")
     text = text.replace(Regex("\\s*(message anuppu|message anupu|message pannu|msg anuppu|msg anupu|msg pannu|whatsapp anuppu|whatsapp pannu)$", RegexOption.IGNORE_CASE), "")
     text = text.replace(Regex("\\s*(செய்தி அனுப்பு|மெசேஜ் அனுப்பு|அனுப்பு)$"), "")
@@ -851,14 +920,14 @@ class IntentDetector {
     // Dative: -ku, -kku, ku, kku
     // Accusative: -ah, -ya, -ai, -a, ah, ya
     // Locative: -kitta, kitta, -idam, idam
-    // Sociative: -oda, -udan
+    // Sociative: -oda, -udan, -kooda, kooda
     // Tamil script: -க்கு, க்கு, -ஐ, ஐ, -விடம், விடம்
-    text = text.replace(Regex("(-?kku|-?ku|-?kitta|-?idam|-?oda|-?udan)$", RegexOption.IGNORE_CASE), "")
+    text = text.replace(Regex("(-?kku|-?ku|-?kitta|-?idam|-?oda|-?udan|-?kooda)$", RegexOption.IGNORE_CASE), "")
     text = text.replace(Regex("(-?ah|-?ya|-?ai|-?a)$", RegexOption.IGNORE_CASE), "")
     text = text.replace(Regex("(-?க்கு|க்கு|-?ஐ|ஐ|-?விடம்|விடம்|-?உடன்|உடன்)$"), "")
 
     // Strip dangling spaces and trailing single case particle words
-    text = text.replace(Regex("\\s+(ku|kku|ah|ya|a|kitta)$", RegexOption.IGNORE_CASE), "")
+    text = text.replace(Regex("\\s+(ku|kku|ah|ya|a|kitta|kooda)$", RegexOption.IGNORE_CASE), "")
 
     // Strip punctuation and residual noise
     text = text.trimEnd('.', '?', '!', ',', ' ')

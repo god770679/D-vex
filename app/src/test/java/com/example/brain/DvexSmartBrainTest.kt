@@ -193,4 +193,81 @@ class DvexSmartBrainTest {
     val response = responseGenerator.generateResponse(DvexIntent.GoBack, permResult, DetectedLanguage.ENGLISH)
     assertEquals("D-VEX needs Accessibility permission for that action.", response)
   }
+
+  @Test
+  fun testCallIntentSemanticEquivalence() {
+    // "hari ku call pannu", "hari ah call", "dei hari ku call pannu", "Call Hari"
+    val r1 = detector.detectIntent("hari ku call pannu", context)
+    assertTrue("Should be CallContact", r1.intent is DvexIntent.CallContact)
+    assertEquals("hari", (r1.intent as DvexIntent.CallContact).recipient.lowercase())
+
+    val r2 = detector.detectIntent("hari ah call", context)
+    assertTrue("Should be CallContact", r2.intent is DvexIntent.CallContact)
+    assertEquals("hari", (r2.intent as DvexIntent.CallContact).recipient.lowercase())
+
+    val r3 = detector.detectIntent("dei hari ku call pannu", context)
+    assertTrue("Should be CallContact", r3.intent is DvexIntent.CallContact)
+    assertEquals("hari", (r3.intent as DvexIntent.CallContact).recipient.lowercase())
+
+    val r4 = detector.detectIntent("Call Hari", context)
+    assertTrue("Should be CallContact", r4.intent is DvexIntent.CallContact)
+    assertEquals("hari", (r4.intent as DvexIntent.CallContact).recipient.lowercase())
+  }
+
+  @Test
+  fun testConfirmationDetection() = kotlinx.coroutines.runBlocking {
+    val appContext = androidx.test.core.app.ApplicationProvider.getApplicationContext<android.content.Context>()
+    val appLauncher = com.example.control.AppLauncherRepository(appContext)
+    val deviceControl = com.example.control.DeviceControlRepository(appContext, appLauncher)
+    val brain = DvexSmartBrain(appContext, appLauncher, deviceControl)
+
+    // Trigger confirmation flow with a direct phone number so contact lookup succeeds in unit test environment
+    val res1 = brain.process("Call 9876543210")
+    assertEquals(DvexToolStatus.CONFIRMATION_REQUIRED, res1.toolResult.status)
+    assertTrue(brain.hasPendingConfirmation())
+
+    // Confirm with "Yes" -> executes pending call intent
+    val res2 = brain.process("Yes")
+    assertTrue("Should execute CallContact", res2.intent is DvexIntent.CallContact)
+    assertFalse("Pending confirmation should now be cleared", brain.hasPendingConfirmation())
+  }
+
+  @Test
+  fun testToneEstimationAndNaturalResponses() {
+    // Frustrated
+    val toneFrustrated = responseGenerator.estimateTone("kaduppa irukku da")
+    assertEquals(EstimatedTone.FRUSTRATED, toneFrustrated)
+    val respFrustrated = responseGenerator.generateResponse(
+      intent = DvexIntent.Conversation("kaduppa irukku da"),
+      toolResult = DvexToolResult(DvexToolStatus.SUCCESS, "conversation", "", ""),
+      language = DetectedLanguage.TANGLISH,
+      userInput = "kaduppa irukku da",
+      tone = toneFrustrated
+    )
+    assertTrue("Should be calm, supportive step-by-step response", respFrustrated.contains("step-by-step"))
+
+    // Sad
+    val toneSad = responseGenerator.estimateTone("sogama irukku da")
+    assertEquals(EstimatedTone.SAD, toneSad)
+    val respSad = responseGenerator.generateResponse(
+      intent = DvexIntent.Conversation("sogama irukku da"),
+      toolResult = DvexToolResult(DvexToolStatus.SUCCESS, "conversation", "", ""),
+      language = DetectedLanguage.TANGLISH,
+      userInput = "sogama irukku da",
+      tone = toneSad
+    )
+    assertTrue("Should be empathetic response", respSad.contains("நான் இருக்கேன்"))
+
+    // Excited
+    val toneExcited = responseGenerator.estimateTone("vera level da")
+    assertEquals(EstimatedTone.EXCITED, toneExcited)
+    val respExcited = responseGenerator.generateResponse(
+      intent = DvexIntent.Conversation("vera level da"),
+      toolResult = DvexToolResult(DvexToolStatus.SUCCESS, "conversation", "", ""),
+      language = DetectedLanguage.TANGLISH,
+      userInput = "vera level da",
+      tone = toneExcited
+    )
+    assertTrue("Should be excited response", respExcited.contains("அடுத்த level"))
+  }
 }
