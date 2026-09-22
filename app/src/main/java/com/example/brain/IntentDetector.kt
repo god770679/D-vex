@@ -55,6 +55,21 @@ class IntentDetector {
       return DetectionResult(DvexIntent.WakeGreeting, 1.0f, language, rawInput)
     }
 
+    // Uncertain speech: if the transcription is garbled or noise-like, ask for a short
+    // clarification instead of guessing. Never invent missing words or facts.
+    if (isGarbledTranscription(cleanText)) {
+      Log.d(TAG, "Garbled/uncertain transcription detected; requesting clarification")
+      return DetectionResult(
+        DvexIntent.LowConfidence(
+          clarificationPrompt = "Sorry, Sir, I didn't quite catch that. Could you say it again?",
+          candidateIntent = null
+        ),
+        0.3f,
+        language,
+        cleanText
+      )
+    }
+
     // 0. Contextual follow-up resolution (e.g., "Tomorrow?" after weather query)
     if (context != null) {
       val contextualIntent = context.resolveContextualFollowUp(cleanText)
@@ -834,7 +849,8 @@ class IntentDetector {
       "mani", "seiy", "seiya", "seiyunga", "seiren", "thambi", "dvex", "devex", "keka",
       "kekuthu", "bathil", "solren", "konjam", "valkai", "approm", "ippo", "ippove",
       "dei", "da", "pa", "machan", "machi", "bro", "nanba", "nanbaa", "thala", "thalaiva",
-      "dosthu", "ku", "kku", "ah", "ya", "kitta", "kodu", "pesu"
+      "dosthu", "ku", "kku", "ah", "ya", "kitta", "kodu", "pesu",
+      "venum", "vendum", "mudiyathu", "poitu", "aagum", "aachu", "romba", "konjam"
     )
 
     val words = lower.split(Regex("[^a-zA-Z0-9]+")).filter { it.isNotBlank() }
@@ -853,6 +869,44 @@ class IntentDetector {
     }
 
     return DetectedLanguage.ENGLISH
+  }
+
+  /**
+   * Heuristic check for garbled or noise-like transcriptions (uncertain speech).
+   * Detects keyboard-mash strings, stretched letter runs, and gibberish-dominant
+   * inputs so the assistant can ask for clarification instead of guessing.
+   * Deliberately conservative: normal words, names, and short utterances pass through.
+   */
+  private fun isGarbledTranscription(text: String): Boolean {
+    val trimmed = text.trim()
+    if (trimmed.length < 8) return false
+
+    val tokens = trimmed.split(Regex("[^a-zA-Z0-9\u0B80-\u0BFF]+"))
+      .filter { it.isNotBlank() }
+    if (tokens.isEmpty()) return false
+
+    var gibberish = 0
+    var meaningful = 0
+    for (token in tokens) {
+      // Tamil script tokens are always meaningful
+      if (token.any { it in '\u0B80'..'\u0BFF' }) {
+        meaningful++
+        continue
+      }
+      val letters = token.count { it.isLetter() }
+      if (letters == 0) continue // pure numbers are fine
+
+      val veryLong = token.length >= 10
+      val stretchedRun = Regex("([a-zA-Z])\\1{3,}").containsMatchIn(token)
+      if (veryLong || stretchedRun) {
+        gibberish++
+      } else {
+        meaningful++
+      }
+    }
+
+    if (meaningful == 0 && gibberish > 0) return true
+    return tokens.size >= 3 && gibberish >= 2 && gibberish * 2 > meaningful
   }
 
   private fun isLanguageNeutral(text: String): Boolean {

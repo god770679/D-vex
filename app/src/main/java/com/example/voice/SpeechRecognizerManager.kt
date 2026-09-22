@@ -35,6 +35,10 @@ class SpeechRecognizerManager(private val context: Context) {
   private var onPartialResultCallback: ((String) -> Unit)? = null
   private var onErrorCallback: ((String) -> Unit)? = null
 
+  /** Confidence score of the latest final recognition result (null when unavailable). */
+  @Volatile var lastResultConfidence: Float? = null
+    private set
+
   // Watchdog timeout runnable in case speech recognizer hangs or user remains silent
   private val timeoutRunnable = Runnable {
     if (_isListening.value || isSessionActive) {
@@ -139,8 +143,10 @@ class SpeechRecognizerManager(private val context: Context) {
               isSessionActive = false
               val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
               val recognizedText = matches?.firstOrNull()?.trim().orEmpty()
+              lastResultConfidence = results?.getFloatArray(SpeechRecognizer.CONFIDENCE_SCORES)
+                ?.firstOrNull()
               if (recognizedText.isNotBlank()) {
-                Log.i(TAG, "Final text: $recognizedText")
+                Log.i(TAG, "Final text: $recognizedText (confidence: $lastResultConfidence)")
                 onResultCallback?.invoke(recognizedText)
               } else {
                 Log.i(TAG, "Empty or blank recognition result")

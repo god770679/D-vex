@@ -294,7 +294,7 @@ class AssistantRepository private constructor(private val context: Context) {
           return@startListening
         }
         _latestTranscript.value = clean
-        processCommand(clean)
+        processCommand(clean, speechRecognizer.lastResultConfidence)
       },
       onError = { error ->
         cancelStateWatchdog()
@@ -339,7 +339,7 @@ class AssistantRepository private constructor(private val context: Context) {
     returnToRestState()
   }
 
-  fun processCommand(command: String) {
+  fun processCommand(command: String, speechConfidence: Float? = null) {
     val clean = command.trim()
     if (clean.isBlank()) {
       Log.i(TAG_AI, "Ignoring blank command; silently returning to Standby")
@@ -357,6 +357,9 @@ class AssistantRepository private constructor(private val context: Context) {
 
       // Arm 10-second processing watchdog
       armStateWatchdog(10000, "Processing timeout")
+
+      // Share ASR confidence so the brain can ask for clarification on uncertain speech
+      smartBrain.reportAsrConfidence(speechConfidence)
 
       val brainResult = smartBrain.process(command)
       cancelStateWatchdog()

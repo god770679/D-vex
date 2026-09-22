@@ -59,7 +59,11 @@ class DvexResponseGenerator {
         text.contains("ennada idhu") || text.contains("thirumba thirumba") || text.contains("frustrated") ||
         text.contains("frustrating") || text.contains("irritat") || text.contains("tension") ||
         text.contains("கடுப்பு") || text.contains("எரிச்சல்") || text.contains("வேலை செய்யவில்லை") ||
-        text.contains("வெறுப்பு")
+        text.contains("வெறுப்பு") ||
+        text.contains("மாட்டேங்குது") || text.contains("சரியா போகவே") || text.contains("சரியா போகல") ||
+        text.contains("sariya pogala") || text.contains("sariya poagala") ||
+        text.contains("pogave mattenguthu") || text.contains("pogave mattenkuthu") ||
+        text.contains("ellame sariya") || text.contains("ellam sariya")
     ) {
       return EstimatedTone.FRUSTRATED
     }
@@ -153,11 +157,19 @@ class DvexResponseGenerator {
       }
     }
 
+    // 2.5 Uncertain speech / garbled transcription: ask a short, natural clarification
+    // instead of guessing. Never invent missing words or facts.
+    if (intent is DvexIntent.LowConfidence) {
+      val response = generateClarification(language, intent.candidateIntent)
+      Log.i(TAG, "Generated clarification ($language, tone=$tone): \"$response\"")
+      return response
+    }
+
     // 3. Language Synthesis
     val response = when (language) {
-      DetectedLanguage.TAMIL -> generateTamilResponse(intent, toolResult, tone, context)
-      DetectedLanguage.TANGLISH -> generateTanglishResponse(intent, toolResult, tone, context)
-      DetectedLanguage.ENGLISH -> generateEnglishResponse(intent, toolResult, tone, context)
+      DetectedLanguage.TAMIL -> generateTamilResponse(intent, toolResult, tone, context, lowerInput)
+      DetectedLanguage.TANGLISH -> generateTanglishResponse(intent, toolResult, tone, context, lowerInput)
+      DetectedLanguage.ENGLISH -> generateEnglishResponse(intent, toolResult, tone, context, lowerInput)
     }
 
     Log.i(TAG, "Generated response ($language, tone=$tone): \"$response\"")
@@ -171,7 +183,8 @@ class DvexResponseGenerator {
     intent: DvexIntent,
     toolResult: DvexToolResult,
     tone: EstimatedTone,
-    context: ConversationContext?
+    context: ConversationContext?,
+    userInput: String
   ): String {
     return when (toolResult.status) {
       DvexToolStatus.NOT_FOUND -> {
@@ -257,7 +270,9 @@ class DvexResponseGenerator {
             EstimatedTone.HAPPY -> "Glad to hear that, Sir! Always at your service."
             EstimatedTone.SAD -> "I'm right here with you, Sir. Take your time, what happened?"
             EstimatedTone.URGENT -> "Right away, Sir. What do you need me to do?"
-            else -> toolResult.spokenText.ifBlank { "Got it, Sir. Standing by." }
+            else ->
+              if (isHelpSeeking(userInput)) "Of course, Sir. What do you need help with?"
+              else toolResult.spokenText.ifBlank { "Got it, Sir. Standing by." }
           }
           is DvexIntent.SearchWeb -> toolResult.spokenText
           else -> toolResult.spokenText.ifBlank { "Got it, Sir." }
@@ -273,7 +288,8 @@ class DvexResponseGenerator {
     intent: DvexIntent,
     toolResult: DvexToolResult,
     tone: EstimatedTone,
-    context: ConversationContext?
+    context: ConversationContext?,
+    userInput: String
   ): String {
     return when (toolResult.status) {
       DvexToolStatus.NOT_FOUND -> {
@@ -301,7 +317,7 @@ class DvexResponseGenerator {
       }
       DvexToolStatus.FAILED -> {
         when (tone) {
-          EstimatedTone.FRUSTRATED -> "Okay, Sir. புரியுது. இதை step-by-step சரி பண்ணலாம்."
+          EstimatedTone.FRUSTRATED -> "Hmm... கொஞ்சம் frustrating-aa இருக்கு போல, Sir. புரியுது — let's fix it step-by-step. என்ன நடந்துச்சு? சொல்லுங்க."
           else -> toolResult.spokenText.ifBlank { "Athai seiya mudiyala, Sir." }
         }
       }
@@ -343,13 +359,15 @@ class DvexResponseGenerator {
           is DvexIntent.RememberFact -> "Got it, Sir. Ninaivil vaithukkonden."
           is DvexIntent.RecallMemory -> toolResult.spokenText
           is DvexIntent.Conversation -> when (tone) {
-            EstimatedTone.FRUSTRATED -> "Okay, Sir. புரியுது. இதை step-by-step சரி பண்ணலாம்."
+            EstimatedTone.FRUSTRATED -> "Hmm... கொஞ்சம் frustrating-aa இருக்கு போல, Sir. புரியுது — let's fix it step-by-step. என்ன நடந்துச்சு? சொல்லுங்க."
             EstimatedTone.SAD -> "Hey Sir, புரியுது. நான் இருக்கேன். என்ன நடந்துச்சு சொல்லுங்க."
             EstimatedTone.EXCITED -> "Nice, Sir! 🔥 இதை அடுத்த level-க்கு கொண்டு போகலாம்."
             EstimatedTone.CONFUSED -> "No worries Sir, thelivaa solren. சொல்லுங்க, என்ன சந்தேகம்?"
             EstimatedTone.URGENT -> "Ippove panren, Sir. என்ன பண்ணனும் சொல்லுங்க."
             EstimatedTone.HAPPY -> "Super Sir! எப்பவும் உங்களுக்காக."
-            else -> toolResult.spokenText.ifBlank { "Okay, Sir. சொல்லுங்க." }
+            else ->
+              if (isHelpSeeking(userInput)) "Sure, Sir. சொல்லுங்க. என்ன help வேணும்?"
+              else toolResult.spokenText.ifBlank { "Okay, Sir. சொல்லுங்க." }
           }
           is DvexIntent.GeneralQuestion -> toolResult.spokenText
           is DvexIntent.MultiStep -> toolResult.spokenText
@@ -367,7 +385,8 @@ class DvexResponseGenerator {
     intent: DvexIntent,
     toolResult: DvexToolResult,
     tone: EstimatedTone,
-    context: ConversationContext?
+    context: ConversationContext?,
+    userInput: String
   ): String {
     return when (toolResult.status) {
       DvexToolStatus.NOT_FOUND -> {
@@ -395,7 +414,7 @@ class DvexResponseGenerator {
       }
       DvexToolStatus.FAILED -> {
         when (tone) {
-          EstimatedTone.FRUSTRATED -> "Okay, Sir. புரியுது. இதை step-by-step சரி பண்ணலாம்."
+          EstimatedTone.FRUSTRATED -> "Hmm... கொஞ்சம் frustrating-aa இருக்கு போல, Sir. புரியுது — let's fix it step-by-step. என்ன நடந்துச்சு? சொல்லுங்க."
           else -> toolResult.spokenText.ifBlank { "இதை முடிக்க முடியவில்லை, Sir." }
         }
       }
@@ -437,13 +456,15 @@ class DvexResponseGenerator {
           is DvexIntent.RememberFact -> "நினைவில் வைத்துக்கொண்டேன், Sir."
           is DvexIntent.RecallMemory -> toolResult.spokenText
           is DvexIntent.Conversation -> when (tone) {
-            EstimatedTone.FRUSTRATED -> "Okay, Sir. புரியுது. இதை step-by-step சரி பண்ணலாம்."
+            EstimatedTone.FRUSTRATED -> "Hmm... கொஞ்சம் frustrating-aa இருக்கு போல, Sir. புரியுது — let's fix it step-by-step. என்ன நடந்துச்சு? சொல்லுங்க."
             EstimatedTone.SAD -> "Hey Sir, புரியுது. நான் இருக்கேன். என்ன நடந்துச்சு சொல்லுங்க."
             EstimatedTone.EXCITED -> "Nice, Sir! 🔥 இதை அடுத்த level-க்கு கொண்டு போகலாம்."
             EstimatedTone.CONFUSED -> "கவலைப்படாதீங்க Sir, தெளிவாக சொல்கிறேன். என்ன சந்தேகம் சொல்லுங்கள்?"
             EstimatedTone.URGENT -> "உடனே பண்றேன், Sir. என்ன செய்ய வேண்டும் சொல்லுங்கள்."
             EstimatedTone.HAPPY -> "மிக்க மகிழ்ச்சி, Sir! எப்போதும் உங்கள் சேவையில்."
-            else -> toolResult.spokenText.ifBlank { "சரி, Sir. சொல்லுங்க." }
+            else ->
+              if (isHelpSeeking(userInput)) "Sure, Sir. சொல்லுங்க. என்ன உதவி வேணும்?"
+              else toolResult.spokenText.ifBlank { "சரி, Sir. சொல்லுங்க." }
           }
           is DvexIntent.GeneralQuestion -> toolResult.spokenText
           is DvexIntent.MultiStep -> toolResult.spokenText
@@ -451,6 +472,62 @@ class DvexResponseGenerator {
         }
       }
       else -> toolResult.spokenText.ifBlank { "முடிந்தது, Sir." }
+    }
+  }
+
+  // =========================================================================
+  // --- Supporting helpers ---
+  // =========================================================================
+
+  /**
+   * Detects short, help-seeking conversational openings so D-VEX can invite the
+   * user to state their request naturally instead of replying with a canned ack.
+   * Longer inputs carry their own request and are left untouched.
+   */
+  private fun isHelpSeeking(userInput: String): Boolean {
+    val lower = userInput.lowercase(Locale.ROOT).trim()
+    if (lower.length > 48) return false
+    return lower.contains("help venum") || lower.contains("help வேணும்") ||
+        lower.contains("oru help") || lower.contains("need help") || lower.contains("help me") ||
+        lower == "help" || lower.contains("udhavi venum") ||
+        lower.contains("உதவி வேணும்") || lower.contains("உதவி செய்யுங்கள்")
+  }
+
+  /**
+   * Short, natural clarification request for uncertain speech / garbled transcription.
+   * If a candidate meaning was inferred from context, offers it back instead of
+   * inventing details; otherwise simply asks the user to repeat.
+   */
+  private fun generateClarification(language: DetectedLanguage, candidateIntent: DvexIntent?): String {
+    val candidatePhrase = candidateIntent?.let { describeIntentForClarification(it) }
+    return when (language) {
+      DetectedLanguage.TAMIL ->
+        if (candidatePhrase != null) "மன்னிக்கவும் Sir, தெளிவா இல்லை. \"$candidatePhrase\" சொன்னீங்களா?"
+        else "மன்னிக்கவும் Sir, கொஞ்சம் தெளிவா சொல்லுங்க?"
+      DetectedLanguage.TANGLISH ->
+        if (candidatePhrase != null) "Sorry Sir, konjam clear-a illa. \"$candidatePhrase\" nu nenachena sollunga?"
+        else "Sorry Sir, konjam clear-a sollunga?"
+      DetectedLanguage.ENGLISH ->
+        if (candidatePhrase != null) "Sorry, Sir, I didn't quite catch that. Did you mean \"$candidatePhrase\"?"
+        else "Sorry, Sir, I didn't quite catch that. Could you say it again?"
+    }
+  }
+
+  /** Renders a short spoken form of an inferred intent for clarification prompts. */
+  private fun describeIntentForClarification(intent: DvexIntent): String? {
+    return when (intent) {
+      is DvexIntent.OpenApp -> "open ${intent.appName}"
+      is DvexIntent.CallContact -> "call ${intent.recipient}"
+      is DvexIntent.SendMessage -> "message ${intent.recipient}"
+      is DvexIntent.SendEmail -> "email ${intent.recipient}"
+      is DvexIntent.SearchWeb -> "search for ${intent.query}"
+      is DvexIntent.GetWeather -> "check the weather"
+      is DvexIntent.GetTime -> "check the time"
+      is DvexIntent.Calculate -> "calculate ${intent.expression}"
+      is DvexIntent.SetAlarm -> "set an alarm"
+      is DvexIntent.SetTimer -> "set a timer"
+      is DvexIntent.ToggleFlashlight -> "toggle the flashlight"
+      else -> null
     }
   }
 

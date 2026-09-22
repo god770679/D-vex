@@ -270,4 +270,79 @@ class DvexSmartBrainTest {
     )
     assertTrue("Should be excited response", respExcited.contains("அடுத்த level"))
   }
+
+  @Test
+  fun testFrustratedTamilScenario() {
+    val input = "எல்லாமே சரியா போகவே மாட்டேங்குது"
+    val tone = responseGenerator.estimateTone(input)
+    assertEquals(EstimatedTone.FRUSTRATED, tone)
+    val resp = responseGenerator.generateResponse(
+      intent = DvexIntent.Conversation(input),
+      toolResult = DvexToolResult(DvexToolStatus.SUCCESS, "conversation", "", ""),
+      language = DetectedLanguage.TANGLISH,
+      userInput = input,
+      tone = tone
+    )
+    assertTrue("Should acknowledge feeling naturally, was: $resp", resp.contains("frustrating"))
+    assertTrue("Should stay supportive, was: $resp", resp.contains("step-by-step"))
+  }
+
+  @Test
+  fun testHelpSeekingTanglish() {
+    val input = "D-VEX enakku oru help venum"
+    val r = detector.detectIntent(input, context)
+    assertTrue("Should be Conversation, was ${r.intent}", r.intent is DvexIntent.Conversation)
+    assertEquals(DetectedLanguage.TANGLISH, r.language)
+    val resp = responseGenerator.generateResponse(
+      intent = r.intent,
+      toolResult = DvexToolResult(DvexToolStatus.SUCCESS, "conversation", "Yes, Sir. சொல்லுங்க.", "Yes, Sir. சொல்லுங்க."),
+      language = DetectedLanguage.TANGLISH,
+      userInput = input,
+      tone = EstimatedTone.NEUTRAL
+    )
+    assertEquals("Sure, Sir. சொல்லுங்க. என்ன help வேணும்?", resp)
+  }
+
+  @Test
+  fun testGarbledInputAsksClarification() {
+    val r = detector.detectIntent("hnnkssss", context)
+    assertTrue("Garbled input should be LowConfidence, was ${r.intent}", r.intent is DvexIntent.LowConfidence)
+    val resp = responseGenerator.generateResponse(
+      intent = r.intent,
+      toolResult = DvexToolResult(DvexToolStatus.SUCCESS, "clarification", "", ""),
+      language = r.language,
+      userInput = "hnnkssss"
+    )
+    assertTrue("Should ask to repeat, was: $resp", resp.contains("again"))
+  }
+
+  @Test
+  fun testClarificationOffersCandidate() {
+    val resp = responseGenerator.generateResponse(
+      intent = DvexIntent.LowConfidence("", candidateIntent = DvexIntent.OpenApp("YouTube")),
+      toolResult = DvexToolResult(DvexToolStatus.SUCCESS, "clarification", "", ""),
+      language = DetectedLanguage.ENGLISH,
+      userInput = "youtub... open"
+    )
+    assertTrue("Should offer inferred meaning, was: $resp", resp.contains("open YouTube"))
+  }
+
+  @Test
+  fun testLowAsrConfidenceWeakIntentAsksClarification() = kotlinx.coroutines.runBlocking {
+    val appContext = androidx.test.core.app.ApplicationProvider.getApplicationContext<android.content.Context>()
+    val appLauncher = com.example.control.AppLauncherRepository(appContext)
+    val deviceControl = com.example.control.DeviceControlRepository(appContext, appLauncher)
+    val brain = DvexSmartBrain(appContext, appLauncher, deviceControl)
+
+    brain.reportAsrConfidence(0.2f)
+    val res = brain.process("some rambling unclear words")
+    assertTrue("Low ASR confidence + weak intent should clarify, was ${res.intent}",
+      res.intent is DvexIntent.LowConfidence)
+    assertTrue(res.spokenText.contains("again"))
+
+    // Strong ASR confidence or strong intents must never be blocked
+    brain.reportAsrConfidence(0.2f)
+    val strong = brain.process("Open YouTube")
+    assertTrue("Clear commands should still execute, was ${strong.intent}", strong.intent is DvexIntent.OpenApp)
+  }
 }

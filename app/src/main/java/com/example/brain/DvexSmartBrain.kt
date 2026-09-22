@@ -39,6 +39,9 @@ class DvexSmartBrain(
   private var activePendingIntent: DvexIntent? = null
   private var activePendingId: String? = null
 
+  // Latest speech-recognition confidence (null when unavailable or typed input)
+  @Volatile private var lastAsrConfidence: Float? = null
+
   /**
    * Processes user input end-to-end through the brain pipeline.
    */
@@ -151,11 +154,26 @@ class DvexSmartBrain(
 
     // 2. Intent Understanding
     val detection = intentDetector.detectIntent(rawInput, conversationContext)
-    val intent = detection.intent
+    var intent = detection.intent
     val confidence = detection.confidence
     val language = detection.language
 
     Log.i(TAG_INTENT, "$intent (confidence: $confidence, lang: $language)")
+
+    // 2.1 Uncertain speech: if speech recognition was low-confidence and the parsed
+    // intent is weak, ask a short clarification instead of guessing an action.
+    // Never invent missing words or facts.
+    val asrConfidence = lastAsrConfidence
+    if (asrConfidence != null && asrConfidence < ASR_LOW_CONFIDENCE_THRESHOLD &&
+        confidence < INTENT_LOW_CONFIDENCE_THRESHOLD &&
+        intent is DvexIntent.Conversation
+    ) {
+      Log.i(TAG_BRAIN, "Low ASR confidence ($asrConfidence) with weak intent; requesting clarification")
+      intent = DvexIntent.LowConfidence(
+        clarificationPrompt = "Sorry, Sir, I didn't quite catch that. Could you say it again?",
+        candidateIntent = null
+      )
+    }
 
     // 2.5 Estimate Tone
     val tone = responseGenerator.estimateTone(rawInput)
@@ -239,9 +257,15 @@ class DvexSmartBrain(
         clean.contains("cancel") || clean.contains("stop")
   }
 
+  /** Reports the latest speech-recognition confidence for uncertain-speech handling. */
+  fun reportAsrConfidence(confidence: Float?) {
+    lastAsrConfidence = confidence
+  }
+
   fun resetContext() {
     conversationContext.clear()
     cancelPendingConfirmation()
+    lastAsrConfidence = null
   }
 
   companion object {
@@ -250,5 +274,10 @@ class DvexSmartBrain(
     private const val TAG_TOOL = "[D-VEX][TOOL]"
     private const val TAG_RESULT = "[D-VEX][RESULT]"
     private const val TAG_RESPONSE = "[D-VEX][RESPONSE]"
+
+    /** ASR scores below this are considered uncertain transcriptions. */
+    private const val ASR_LOW_CONFIDENCE_THRESHOLD = 0.4f
+    /** Weakly-parsed intents (e.g. bare Conversation fallback) below this are not trusted. */
+    private const val INTENT_LOW_CONFIDENCE_THRESHOLD = 0.75f
   }
 }
