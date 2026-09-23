@@ -369,7 +369,8 @@ fun MemoryCorePanel(
  */
 @Composable
 fun CameraVisionPanel(
-  modifier: Modifier = Modifier
+  modifier: Modifier = Modifier,
+  isVisionActive: Boolean = false
 ) {
   val infiniteTransition = rememberInfiniteTransition(label = "camScan")
   val scanYPercent by infiniteTransition.animateFloat(
@@ -384,7 +385,7 @@ fun CameraVisionPanel(
 
   TacticalPanel(
     title = "Camera Vision",
-    headerTag = "PLACEHOLDER PREVIEW",
+    headerTag = if (isVisionActive) "OPTICAL ACTIVE" else "STANDBY",
     modifier = modifier
   ) {
     Box(
@@ -449,14 +450,14 @@ fun CameraVisionPanel(
         horizontalArrangement = Arrangement.SpaceBetween
       ) {
         Text(
-          text = "[ AI VISION ACTIVE ]",
+          text = if (isVisionActive) "[ AI VISION ACTIVE ]" else "[ VISION FEED OFFLINE ]",
           fontFamily = FontFamily.Monospace,
           fontSize = 8.sp,
           fontWeight = FontWeight.Bold,
-          color = DvexNeonRedBright
+          color = if (isVisionActive) DvexNeonRedBright else DvexTextMuted
         )
         Text(
-          text = "1.0x // OPTICAL",
+          text = if (isVisionActive) "1.0x // OPTICAL" else "OFFLINE",
           fontFamily = FontFamily.Monospace,
           fontSize = 8.sp,
           color = DvexTextSecondary
@@ -464,10 +465,10 @@ fun CameraVisionPanel(
       }
 
       Text(
-        text = "OPTICAL SENSOR STANDBY",
+        text = if (isVisionActive) "OPTICAL SENSOR ACTIVE" else "OPTICAL SENSOR STANDBY",
         fontFamily = FontFamily.Monospace,
         fontSize = 8.sp,
-        color = DvexTextMuted,
+        color = if (isVisionActive) DvexNeonRedBright else DvexTextMuted,
         modifier = Modifier
           .align(Alignment.BottomCenter)
           .padding(bottom = 6.dp)

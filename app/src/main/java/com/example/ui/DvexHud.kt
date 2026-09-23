@@ -62,6 +62,7 @@ import com.example.ui.components.LocationPanel
 import com.example.ui.components.MemoryCorePanel
 import com.example.ui.components.MicrophoneButton
 import com.example.ui.components.NotificationPanel
+import com.example.ui.components.PowerModeButtonCluster
 import com.example.ui.components.QuickAccessPanel
 import com.example.ui.components.RecentActivityPanel
 import com.example.ui.components.ResponsePanel
@@ -100,7 +101,16 @@ fun DvexHud(
   onCenterCoreTapped: (() -> Unit)? = null,
   onMicrophoneTapped: (() -> Unit)? = null,
   onQuickActionSelected: ((String) -> Unit)? = null,
-  onOpenSettingsRequested: (() -> Unit)? = null
+  onOpenSettingsRequested: (() -> Unit)? = null,
+  isPowerMode: Boolean = false,
+  onTogglePowerMode: () -> Unit = {},
+  isOrbActive: Boolean = false,
+  isVisionActive: Boolean = false,
+  onToggleOrb: () -> Unit = {},
+  onRecentApp: () -> Unit = {},
+  onNotificationAlert: () -> Unit = {},
+  onDeviceControl: () -> Unit = {},
+  onToggleVision: () -> Unit = {}
 ) {
   BoxWithConstraints(
     modifier = modifier
@@ -117,7 +127,16 @@ fun DvexHud(
         onCenterCoreTapped = onCenterCoreTapped,
         onMicrophoneTapped = onMicrophoneTapped,
         onQuickActionSelected = onQuickActionSelected,
-        onOpenSettingsRequested = onOpenSettingsRequested
+        onOpenSettingsRequested = onOpenSettingsRequested,
+        isPowerMode = isPowerMode,
+        onTogglePowerMode = onTogglePowerMode,
+        isOrbActive = isOrbActive,
+        isVisionActive = isVisionActive,
+        onToggleOrb = onToggleOrb,
+        onRecentApp = onRecentApp,
+        onNotificationAlert = onNotificationAlert,
+        onDeviceControl = onDeviceControl,
+        onToggleVision = onToggleVision
       )
     } else {
       CompactMobileTacticalHud(
@@ -127,7 +146,16 @@ fun DvexHud(
         onCenterCoreTapped = onCenterCoreTapped,
         onMicrophoneTapped = onMicrophoneTapped,
         onQuickActionSelected = onQuickActionSelected,
-        onOpenSettingsRequested = onOpenSettingsRequested
+        onOpenSettingsRequested = onOpenSettingsRequested,
+        isPowerMode = isPowerMode,
+        onTogglePowerMode = onTogglePowerMode,
+        isOrbActive = isOrbActive,
+        isVisionActive = isVisionActive,
+        onToggleOrb = onToggleOrb,
+        onRecentApp = onRecentApp,
+        onNotificationAlert = onNotificationAlert,
+        onDeviceControl = onDeviceControl,
+        onToggleVision = onToggleVision
       )
     }
   }
@@ -144,7 +172,16 @@ private fun WidescreenTacticalHud(
   onCenterCoreTapped: (() -> Unit)? = null,
   onMicrophoneTapped: (() -> Unit)? = null,
   onQuickActionSelected: ((String) -> Unit)? = null,
-  onOpenSettingsRequested: (() -> Unit)? = null
+  onOpenSettingsRequested: (() -> Unit)? = null,
+  isPowerMode: Boolean = false,
+  onTogglePowerMode: () -> Unit = {},
+  isOrbActive: Boolean = false,
+  isVisionActive: Boolean = false,
+  onToggleOrb: () -> Unit = {},
+  onRecentApp: () -> Unit = {},
+  onNotificationAlert: () -> Unit = {},
+  onDeviceControl: () -> Unit = {},
+  onToggleVision: () -> Unit = {}
 ) {
   Column(
     modifier = Modifier
@@ -154,7 +191,9 @@ private fun WidescreenTacticalHud(
     // TOP BAR
     DvexTopBar(
       uiState = uiState,
-      isCompact = false
+      isCompact = false,
+      isPowerMode = isPowerMode,
+      onTogglePowerMode = onTogglePowerMode
     )
 
     // MAIN CONTENT ROW
@@ -190,7 +229,7 @@ private fun WidescreenTacticalHud(
         NotificationPanel(notifications = uiState.notifications)
         SystemStatusPanel(vitals = uiState.systemStatus)
         MemoryCorePanel(percentage = uiState.memoryPercentage)
-        CameraVisionPanel()
+        CameraVisionPanel(isVisionActive = isVisionActive)
       }
 
       Spacer(modifier = Modifier.width(8.dp))
@@ -232,6 +271,16 @@ private fun WidescreenTacticalHud(
       ) {
         TimePanel()
         LocationPanel(location = uiState.location)
+        PowerModeButtonCluster(
+          isPowerMode = isPowerMode,
+          isOrbActive = isOrbActive,
+          isVisionActive = isVisionActive,
+          onToggleOrb = onToggleOrb,
+          onRecentApp = onRecentApp,
+          onNotificationAlert = onNotificationAlert,
+          onDeviceControl = onDeviceControl,
+          onToggleVision = onToggleVision
+        )
         QuickAccessPanel(
           onActionSelected = { action ->
             if (action == "Settings" || action == "More") {
@@ -332,7 +381,16 @@ private fun CompactMobileTacticalHud(
   onCenterCoreTapped: (() -> Unit)? = null,
   onMicrophoneTapped: (() -> Unit)? = null,
   onQuickActionSelected: ((String) -> Unit)? = null,
-  onOpenSettingsRequested: (() -> Unit)? = null
+  onOpenSettingsRequested: (() -> Unit)? = null,
+  isPowerMode: Boolean = false,
+  onTogglePowerMode: () -> Unit = {},
+  isOrbActive: Boolean = false,
+  isVisionActive: Boolean = false,
+  onToggleOrb: () -> Unit = {},
+  onRecentApp: () -> Unit = {},
+  onNotificationAlert: () -> Unit = {},
+  onDeviceControl: () -> Unit = {},
+  onToggleVision: () -> Unit = {}
 ) {
   var activeMobileTab by remember { mutableStateOf(MobileHudTab.ALL) }
 
@@ -344,7 +402,9 @@ private fun CompactMobileTacticalHud(
     // TOP BAR: D-VEX + System status (Compact version)
     DvexTopBar(
       uiState = uiState,
-      isCompact = true
+      isCompact = true,
+      isPowerMode = isPowerMode,
+      onTogglePowerMode = onTogglePowerMode
     )
 
     // MAIN SCROLLABLE CONTENT BODY
@@ -424,7 +484,7 @@ private fun CompactMobileTacticalHud(
             horizontalArrangement = Arrangement.spacedBy(6.dp)
           ) {
             SystemStatusPanel(vitals = uiState.systemStatus, modifier = Modifier.weight(1f))
-            CameraVisionPanel(modifier = Modifier.weight(1f))
+            CameraVisionPanel(isVisionActive = isVisionActive, modifier = Modifier.weight(1f))
           }
 
           // Row 3: Time + Location
@@ -435,6 +495,18 @@ private fun CompactMobileTacticalHud(
             TimePanel(modifier = Modifier.weight(1f))
             LocationPanel(location = uiState.location, modifier = Modifier.weight(1f))
           }
+
+          // Power Mode Core Matrix Panel
+          PowerModeButtonCluster(
+            isPowerMode = isPowerMode,
+            isOrbActive = isOrbActive,
+            isVisionActive = isVisionActive,
+            onToggleOrb = onToggleOrb,
+            onRecentApp = onRecentApp,
+            onNotificationAlert = onNotificationAlert,
+            onDeviceControl = onDeviceControl,
+            onToggleVision = onToggleVision
+          )
 
           // Quick Access Grid (8 compact tactical buttons)
           QuickAccessPanel(
@@ -478,11 +550,23 @@ private fun CompactMobileTacticalHud(
             horizontalArrangement = Arrangement.spacedBy(6.dp)
           ) {
             WeatherPanel(weather = uiState.weather, modifier = Modifier.weight(1f))
-            CameraVisionPanel(modifier = Modifier.weight(1f))
+            CameraVisionPanel(isVisionActive = isVisionActive, modifier = Modifier.weight(1f))
           }
         }
 
         MobileHudTab.ACCESS -> {
+          // Power Mode Core Matrix Panel
+          PowerModeButtonCluster(
+            isPowerMode = isPowerMode,
+            isOrbActive = isOrbActive,
+            isVisionActive = isVisionActive,
+            onToggleOrb = onToggleOrb,
+            onRecentApp = onRecentApp,
+            onNotificationAlert = onNotificationAlert,
+            onDeviceControl = onDeviceControl,
+            onToggleVision = onToggleVision
+          )
+
           QuickAccessPanel(
             onActionSelected = { action ->
               if (action == "Settings" || action == "More") {

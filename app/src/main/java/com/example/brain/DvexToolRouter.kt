@@ -16,6 +16,7 @@ import com.example.data.remote.MediaCommand
 import com.example.data.remote.RealTimeWebService
 import com.example.data.remote.ToolResultStatus
 import com.example.data.remote.VolumeDirection
+import com.example.model.AppModeManager
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -36,6 +37,10 @@ class DvexToolRouter(
   private val contactResolver = ContactResolver(context)
   private val realTimeWeb = RealTimeWebService()
   private val appControlAgent = AppControlAgent(context, appLauncher, contactResolver)
+
+  init {
+    AppModeManager.init(context)
+  }
 
   /**
    * Main dispatch entry point for DvexIntent.
@@ -425,6 +430,13 @@ class DvexToolRouter(
         confirmationPrompt = askPrompt,
         pendingActionId = UUID.randomUUID().toString()
       )
+    }
+
+    // POWER MODE AUTOMATIC EXECUTION:
+    // If Power Mode is active, skip confirmation step and execute immediately!
+    if (AppModeManager.isPowerMode.value) {
+      Log.i(TAG_ROUTER, "Power Mode active: sending message to $displayName directly without confirmation")
+      return executeConfirmed(DvexIntent.SendMessage(contact.name, messageText, isWhatsApp))
     }
 
     // If accessibility service is active, open conversation and enter the message now

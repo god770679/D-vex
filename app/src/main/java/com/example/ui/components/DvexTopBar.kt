@@ -8,6 +8,7 @@ import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -32,6 +33,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -52,7 +54,9 @@ import com.example.ui.theme.DvexTextSecondary
 fun DvexTopBar(
   uiState: DvexUiState,
   modifier: Modifier = Modifier,
-  isCompact: Boolean = false
+  isCompact: Boolean = false,
+  isPowerMode: Boolean = false,
+  onTogglePowerMode: () -> Unit = {}
 ) {
   val infiniteTransition = rememberInfiniteTransition(label = "pulseTransition")
   val pulseAlpha by infiniteTransition.animateFloat(
@@ -77,37 +81,82 @@ fun DvexTopBar(
       horizontalArrangement = Arrangement.SpaceBetween,
       verticalAlignment = Alignment.CenterVertically
     ) {
-      // LEFT: Brand identity
-      Row(
-        verticalAlignment = Alignment.CenterVertically,
-        modifier = Modifier
-          .border(1.dp, DvexBorderRed, CutCornerShape(topStart = 6.dp, bottomEnd = 6.dp))
-          .background(DvexBlack.copy(alpha = 0.6f))
-          .padding(horizontal = 8.dp, vertical = 4.dp)
-      ) {
-        Box(
+      // LEFT: Brand identity + Mode Switch
+      Row(verticalAlignment = Alignment.CenterVertically) {
+        Row(
+          verticalAlignment = Alignment.CenterVertically,
           modifier = Modifier
-            .size(6.dp, 24.dp)
-            .background(DvexNeonRed)
-        )
+            .border(1.dp, DvexBorderRed, CutCornerShape(topStart = 6.dp, bottomEnd = 6.dp))
+            .background(DvexBlack.copy(alpha = 0.6f))
+            .padding(horizontal = 8.dp, vertical = 4.dp)
+        ) {
+          Box(
+            modifier = Modifier
+              .size(6.dp, 24.dp)
+              .background(DvexNeonRed)
+          )
+          Spacer(modifier = Modifier.width(8.dp))
+          Column {
+            Text(
+              text = "D-VEX",
+              fontFamily = FontFamily.Monospace,
+              fontSize = 16.sp,
+              fontWeight = FontWeight.ExtraBold,
+              letterSpacing = 3.sp,
+              color = DvexNeonRedBright
+            )
+            Text(
+              text = "AI ASSISTANT",
+              fontFamily = FontFamily.Monospace,
+              fontSize = 8.sp,
+              fontWeight = FontWeight.Bold,
+              letterSpacing = 1.5.sp,
+              color = DvexTextSecondary
+            )
+          }
+        }
+
         Spacer(modifier = Modifier.width(8.dp))
-        Column {
-          Text(
-            text = "D-VEX",
-            fontFamily = FontFamily.Monospace,
-            fontSize = 16.sp,
-            fontWeight = FontWeight.ExtraBold,
-            letterSpacing = 3.sp,
-            color = DvexNeonRedBright
-          )
-          Text(
-            text = "AI ASSISTANT",
-            fontFamily = FontFamily.Monospace,
-            fontSize = 8.sp,
-            fontWeight = FontWeight.Bold,
-            letterSpacing = 1.5.sp,
-            color = DvexTextSecondary
-          )
+
+        // D-VEX DUAL MODE TOGGLE (STANDARD / POWER)
+        Row(
+          verticalAlignment = Alignment.CenterVertically,
+          modifier = Modifier
+            .clip(CutCornerShape(4.dp))
+            .border(1.dp, if (isPowerMode) DvexNeonRedBright else DvexBorderMuted, CutCornerShape(4.dp))
+            .background(DvexBlack.copy(alpha = 0.8f))
+            .clickable { onTogglePowerMode() }
+            .padding(2.dp)
+            .testTag("mode_toggle_switch")
+        ) {
+          Box(
+            modifier = Modifier
+              .clip(CutCornerShape(3.dp))
+              .background(if (!isPowerMode) DvexNeonRed else Color.Transparent)
+              .padding(horizontal = 5.dp, vertical = 3.dp)
+          ) {
+            Text(
+              text = "STD",
+              fontFamily = FontFamily.Monospace,
+              fontSize = 8.sp,
+              fontWeight = if (!isPowerMode) FontWeight.ExtraBold else FontWeight.Medium,
+              color = if (!isPowerMode) Color.White else DvexTextMuted
+            )
+          }
+          Box(
+            modifier = Modifier
+              .clip(CutCornerShape(3.dp))
+              .background(if (isPowerMode) DvexNeonRed else Color.Transparent)
+              .padding(horizontal = 5.dp, vertical = 3.dp)
+          ) {
+            Text(
+              text = "PWR",
+              fontFamily = FontFamily.Monospace,
+              fontSize = 8.sp,
+              fontWeight = if (isPowerMode) FontWeight.ExtraBold else FontWeight.Medium,
+              color = if (isPowerMode) Color.White else DvexTextMuted
+            )
+          }
         }
       }
 

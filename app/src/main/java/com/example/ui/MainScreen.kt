@@ -16,7 +16,16 @@ fun MainScreen(
   onCenterCoreTapped: (() -> Unit)? = null,
   onMicrophoneTapped: (() -> Unit)? = null,
   onQuickActionSelected: ((String) -> Unit)? = null,
-  onOpenSettingsRequested: (() -> Unit)? = null
+  onOpenSettingsRequested: (() -> Unit)? = null,
+  isPowerMode: Boolean = false,
+  onTogglePowerMode: () -> Unit = {},
+  isOrbActive: Boolean = false,
+  isVisionActive: Boolean = false,
+  onToggleOrb: () -> Unit = {},
+  onRecentApp: () -> Unit = {},
+  onNotificationAlert: () -> Unit = {},
+  onDeviceControl: () -> Unit = {},
+  onToggleVision: () -> Unit = {}
 ) {
   DvexHud(
     uiState = uiState,
@@ -26,6 +35,15 @@ fun MainScreen(
     onCenterCoreTapped = onCenterCoreTapped,
     onMicrophoneTapped = onMicrophoneTapped,
     onQuickActionSelected = onQuickActionSelected,
-    onOpenSettingsRequested = onOpenSettingsRequested
+    onOpenSettingsRequested = onOpenSettingsRequested,
+    isPowerMode = isPowerMode,
+    onTogglePowerMode = onTogglePowerMode,
+    isOrbActive = isOrbActive,
+    isVisionActive = isVisionActive,
+    onToggleOrb = onToggleOrb,
+    onRecentApp = onRecentApp,
+    onNotificationAlert = onNotificationAlert,
+    onDeviceControl = onDeviceControl,
+    onToggleVision = onToggleVision
   )
 }

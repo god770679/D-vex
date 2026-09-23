@@ -42,6 +42,8 @@ class MainActivity : ComponentActivity() {
       MyApplicationTheme {
         val uiState by viewModel.uiState.collectAsState()
         val settings by viewModel.settings.collectAsState()
+        val isPowerMode by viewModel.isPowerMode.collectAsState()
+        val isVisionActive by viewModel.isVisionActive.collectAsState()
         val showSettingsDialog by showSettingsDialogState
 
         // Contextual runtime permission launcher for Microphone (Wake-Word & Voice Commands)
@@ -113,6 +115,15 @@ class MainActivity : ComponentActivity() {
           onOpenSettingsRequested = {
             showSettingsDialogState.value = true
           },
+          isPowerMode = isPowerMode,
+          onTogglePowerMode = { viewModel.togglePowerMode() },
+          isOrbActive = settings.floatingOrbEnabled,
+          isVisionActive = isVisionActive,
+          onToggleOrb = { viewModel.toggleOrb() },
+          onRecentApp = { viewModel.showRecents() },
+          onNotificationAlert = { viewModel.showNotifications() },
+          onDeviceControl = { viewModel.triggerDeviceControl("home") },
+          onToggleVision = { viewModel.toggleVision() },
           modifier = Modifier.fillMaxSize()
         )
 

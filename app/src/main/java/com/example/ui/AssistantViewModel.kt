@@ -6,6 +6,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.data.remote.PendingConfirmation
 import com.example.model.AiCoreState
+import com.example.model.AppModeManager
 import com.example.model.DvexAssistantState
 import com.example.model.DvexSettings
 import com.example.model.DvexUiState
@@ -31,7 +32,11 @@ class AssistantViewModel(application: Application) : AndroidViewModel(applicatio
   val pendingConfirmation: StateFlow<PendingConfirmation?> = assistantRepo.pendingConfirmation
   val latestTranscript: StateFlow<String> = assistantRepo.latestTranscript
 
+  val isPowerMode: StateFlow<Boolean> = AppModeManager.isPowerMode
+  val isVisionActive: StateFlow<Boolean> = AppModeManager.isVisionActive
+
   init {
+    AppModeManager.init(application)
     viewModelScope.launch {
       assistantRepo.assistantState.collectLatest { state ->
         val mappedAiState = state.toAiCoreState()
@@ -132,5 +137,43 @@ class AssistantViewModel(application: Application) : AndroidViewModel(applicatio
 
   fun stopWakeWordListening() {
     assistantRepo.wakeWordManager.stop()
+  }
+
+  fun togglePowerMode() {
+    AppModeManager.togglePowerMode(getApplication())
+  }
+
+  fun setPowerMode(enabled: Boolean) {
+    AppModeManager.setPowerMode(enabled, getApplication())
+  }
+
+  fun toggleVision() {
+    AppModeManager.toggleVision(getApplication())
+  }
+
+  fun setVisionActive(active: Boolean) {
+    AppModeManager.setVisionActive(active, getApplication())
+  }
+
+  fun toggleOrb() {
+    val current = settings.value.floatingOrbEnabled
+    updateSettings(settings.value.copy(floatingOrbEnabled = !current))
+  }
+
+  fun showRecents() {
+    assistantRepo.deviceControl.showRecents()
+  }
+
+  fun showNotifications() {
+    assistantRepo.deviceControl.showNotifications()
+  }
+
+  fun triggerDeviceControl(action: String = "home") {
+    when (action.lowercase()) {
+      "back" -> assistantRepo.deviceControl.navigateBack()
+      "recents" -> assistantRepo.deviceControl.showRecents()
+      "notifications" -> assistantRepo.deviceControl.showNotifications()
+      else -> assistantRepo.deviceControl.navigateHome()
+    }
   }
 }
