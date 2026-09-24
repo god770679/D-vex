@@ -36,7 +36,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.clip
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalFocusManager
@@ -45,7 +45,6 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
-import androidx.compose.ui.text.input.KeyboardOptions
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -72,7 +71,6 @@ import com.example.ui.components.VoiceModule
 import com.example.ui.components.WeatherPanel
 import com.example.ui.theme.DvexBlack
 import com.example.ui.theme.DvexBorderMuted
-import com.example.ui.theme.DvexBorderRed
 import com.example.ui.theme.DvexNeonRed
 import com.example.ui.theme.DvexNeonRedBright
 import com.example.ui.theme.DvexSurfaceCard
@@ -85,15 +83,8 @@ import com.example.ui.theme.DvexTextSecondary
  * Main D-VEX Tactical HUD.
  *
  * Layout order:
- *
- * HEADER
- * STATUS
- * WEATHER
- * VISION
- * D-VEX CORE
- * QUICK ACTIONS
- * VOICE / INPUT
- * RESPONSE
+ * HEADER / STATUS / WEATHER / VISION / D-VEX CORE /
+ * QUICK ACTIONS / VOICE + INPUT / RESPONSE
  *
  * Existing D-VEX core visuals and callbacks are preserved.
  */
@@ -222,12 +213,7 @@ private fun WidescreenTacticalHud(
                     if (nav == NavItem.SETTINGS) {
                         onOpenSettingsRequested?.invoke()
                     }
-
-                    onUiStateChange(
-                        uiState.copy(
-                            selectedNavigation = nav
-                        )
-                    )
+                    onUiStateChange(uiState.copy(selectedNavigation = nav))
                 }
             )
 
@@ -310,17 +296,10 @@ private fun WidescreenTacticalHud(
                                     onCenterCoreTapped()
                                 } else {
                                     val newVoiceState = when (newState) {
-                                        AiCoreState.LISTENING ->
-                                            VoiceState.LISTENING
-
-                                        AiCoreState.PROCESSING ->
-                                            VoiceState.PROCESSING
-
-                                        AiCoreState.RESPONDING ->
-                                            VoiceState.SPEAKING
-
-                                        else ->
-                                            VoiceState.IDLE
+                                        AiCoreState.LISTENING -> VoiceState.LISTENING
+                                        AiCoreState.PROCESSING -> VoiceState.PROCESSING
+                                        AiCoreState.RESPONDING -> VoiceState.SPEAKING
+                                        else -> VoiceState.IDLE
                                     }
 
                                     onUiStateChange(
@@ -359,18 +338,14 @@ private fun WidescreenTacticalHud(
 
                     QuickAccessPanel(
                         onActionSelected = { action ->
-                            if (
-                                action == "Settings" ||
-                                action == "More"
-                            ) {
+                            if (action == "Settings" || action == "More") {
                                 onOpenSettingsRequested?.invoke()
                             }
 
                             onQuickActionSelected?.invoke(action)
                                 ?: onUiStateChange(
                                     uiState.copy(
-                                        responseText =
-                                            "Quick access initiated for $action. Standby.",
+                                        responseText = "Quick access initiated for $action. Standby.",
                                         aiState = AiCoreState.PROCESSING
                                     )
                                 )
@@ -410,12 +385,7 @@ private fun WidescreenTacticalHud(
                     if (nav == NavItem.SETTINGS) {
                         onOpenSettingsRequested?.invoke()
                     }
-
-                    onUiStateChange(
-                        uiState.copy(
-                            selectedNavigation = nav
-                        )
-                    )
+                    onUiStateChange(uiState.copy(selectedNavigation = nav))
                 }
             )
         }
@@ -480,20 +450,16 @@ private fun CompactMobileTacticalHud(
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
 
-            /* =================================================
-             * 1. STATUS ROW
-             * ================================================= */
+            /* 1. STATUS */
 
             HudSectionCard(
                 title = "SYSTEM STATUS",
                 modifier = Modifier.fillMaxWidth()
             ) {
-
                 Column(
                     modifier = Modifier.fillMaxWidth(),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-
                     SystemStatusPanel(
                         vitals = uiState.systemStatus,
                         modifier = Modifier.fillMaxWidth()
@@ -510,30 +476,24 @@ private fun CompactMobileTacticalHud(
                 }
             }
 
-            /* =================================================
-             * 2. WEATHER
-             * ================================================= */
+            /* 2. WEATHER */
 
             HudSectionCard(
                 title = "WEATHER",
                 modifier = Modifier.fillMaxWidth()
             ) {
-
                 WeatherPanel(
                     weather = uiState.weather,
                     modifier = Modifier.fillMaxWidth()
                 )
             }
 
-            /* =================================================
-             * 3. AI VISION
-             * ================================================= */
+            /* 3. AI VISION */
 
             HudSectionCard(
                 title = "AI VISION",
                 modifier = Modifier.fillMaxWidth()
             ) {
-
                 CameraVisionPanel(
                     isVisionActive = isVisionActive,
                     modifier = Modifier.fillMaxWidth()
@@ -542,64 +502,40 @@ private fun CompactMobileTacticalHud(
                 Spacer(modifier = Modifier.height(6.dp))
 
                 Text(
-                    text = if (isVisionActive) {
-                        "VISION ACTIVE"
-                    } else {
-                        "VISION STANDBY"
-                    },
+                    text = if (isVisionActive) "VISION ACTIVE" else "VISION STANDBY",
                     modifier = Modifier.fillMaxWidth(),
                     fontFamily = FontFamily.Monospace,
                     fontSize = 10.sp,
                     fontWeight = FontWeight.Bold,
-                    color = if (isVisionActive) {
-                        DvexNeonRedBright
-                    } else {
-                        DvexTextMuted
-                    }
+                    color = if (isVisionActive) DvexNeonRedBright else DvexTextMuted
                 )
             }
 
-            /* =================================================
-             * 4. D-VEX AI CORE
-             * ================================================= */
+            /* 4. D-VEX AI CORE */
 
             HudSectionCard(
                 title = "D-VEX AI CORE",
                 modifier = Modifier.fillMaxWidth()
             ) {
-
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
                         .height(330.dp),
                     contentAlignment = Alignment.Center
                 ) {
-
-                    /*
-                     * IMPORTANT:
-                     * Existing DvexAiCore is reused without changing
-                     * its colors, glow, animation or visual design.
-                     */
+                    // Existing DvexAiCore is reused without changing
+                    // its colors, glow, animation or visual design.
                     DvexAiCore(
                         aiState = uiState.aiState,
                         onStateChangeRequest = { newState ->
-
                             if (onCenterCoreTapped != null) {
                                 onCenterCoreTapped()
                             } else {
-
                                 val newVoiceState = when (newState) {
-                                    AiCoreState.LISTENING ->
-                                        VoiceState.LISTENING
-
-                                    AiCoreState.PROCESSING ->
-                                        VoiceState.PROCESSING
-
-                                    AiCoreState.RESPONDING ->
-                                        VoiceState.SPEAKING
-
-                                    else ->
-                                        VoiceState.IDLE
+                                    AiCoreState.LISTENING -> VoiceState.LISTENING
+                                    AiCoreState.PROCESSING -> VoiceState.PROCESSING
+                                    AiCoreState.RESPONDING -> VoiceState.SPEAKING
+                                    else -> VoiceState.IDLE
                                 }
 
                                 onUiStateChange(
@@ -614,21 +550,14 @@ private fun CompactMobileTacticalHud(
                 }
             }
 
-            /* =================================================
-             * 5. QUICK ACTIONS
-             * ================================================= */
+            /* 5. QUICK ACTIONS */
 
             HudSectionCard(
-                title = if (isPowerMode) {
-                    "POWER QUICK ACTIONS"
-                } else {
-                    "QUICK ACTIONS"
-                },
+                title = if (isPowerMode) "POWER QUICK ACTIONS" else "QUICK ACTIONS",
                 modifier = Modifier.fillMaxWidth()
             ) {
 
                 if (isPowerMode) {
-
                     PowerModeButtonCluster(
                         isPowerMode = true,
                         isOrbActive = isOrbActive,
@@ -645,19 +574,14 @@ private fun CompactMobileTacticalHud(
 
                 QuickAccessPanel(
                     onActionSelected = { action ->
-
-                        if (
-                            action == "Settings" ||
-                            action == "More"
-                        ) {
+                        if (action == "Settings" || action == "More") {
                             onOpenSettingsRequested?.invoke()
                         }
 
                         onQuickActionSelected?.invoke(action)
                             ?: onUiStateChange(
                                 uiState.copy(
-                                    responseText =
-                                        "Quick access: $action triggered in HUD.",
+                                    responseText = "Quick access: $action triggered in HUD.",
                                     aiState = AiCoreState.PROCESSING
                                 )
                             )
@@ -665,15 +589,12 @@ private fun CompactMobileTacticalHud(
                 )
             }
 
-            /* =================================================
-             * 6. MEMORY / RECENT / NOTIFICATIONS
-             * ================================================= */
+            /* 6. MEMORY / RECENT / NOTIFICATIONS */
 
             HudSectionCard(
                 title = "SYSTEM DATA",
                 modifier = Modifier.fillMaxWidth()
             ) {
-
                 MemoryCorePanel(
                     percentage = uiState.memoryPercentage,
                     modifier = Modifier.fillMaxWidth()
@@ -695,9 +616,7 @@ private fun CompactMobileTacticalHud(
             }
         }
 
-        /* =================================================
-         * 7. VOICE + INPUT + RESPONSE
-         * ================================================= */
+        /* 7. VOICE + INPUT + RESPONSE */
 
         MobileBottomControls(
             uiState = uiState,
@@ -742,10 +661,7 @@ private fun HudSectionCard(
                 modifier = Modifier
                     .width(3.dp)
                     .height(16.dp)
-                    .background(
-                        DvexNeonRed,
-                        CutCornerShape(1.dp)
-                    )
+                    .background(DvexNeonRed, CutCornerShape(1.dp))
             )
 
             Spacer(modifier = Modifier.width(7.dp))
@@ -782,10 +698,7 @@ private fun DesktopBottomControls(
             .border(
                 width = 1.dp,
                 color = DvexBorderMuted,
-                shape = CutCornerShape(
-                    topStart = 8.dp,
-                    topEnd = 8.dp
-                )
+                shape = CutCornerShape(topStart = 8.dp, topEnd = 8.dp)
             )
             .padding(horizontal = 12.dp, vertical = 8.dp)
     ) {
@@ -798,9 +711,7 @@ private fun DesktopBottomControls(
         Spacer(modifier = Modifier.height(6.dp))
 
         TacticalCommandInput(
-            onSendCommand = { command ->
-                onSendCommand?.invoke(command)
-            },
+            onSendCommand = { command -> onSendCommand?.invoke(command) },
             modifier = Modifier.fillMaxWidth()
         )
 
@@ -849,10 +760,7 @@ private fun MobileBottomControls(
             .border(
                 width = 1.dp,
                 color = DvexBorderMuted,
-                shape = CutCornerShape(
-                    topStart = 8.dp,
-                    topEnd = 8.dp
-                )
+                shape = CutCornerShape(topStart = 8.dp, topEnd = 8.dp)
             )
             .padding(horizontal = 10.dp, vertical = 8.dp)
     ) {
@@ -869,9 +777,7 @@ private fun MobileBottomControls(
         /* TEXT COMMAND */
 
         TacticalCommandInput(
-            onSendCommand = { command ->
-                onSendCommand?.invoke(command)
-            },
+            onSendCommand = { command -> onSendCommand?.invoke(command) },
             modifier = Modifier.fillMaxWidth()
         )
 
@@ -955,52 +861,36 @@ fun TacticalCommandInput(
     onSendCommand: (String) -> Unit,
     modifier: Modifier = Modifier
 ) {
-    var commandText by remember {
-        mutableStateOf("")
-    }
+    var commandText by remember { mutableStateOf("") }
 
     val focusManager = LocalFocusManager.current
-    val keyboardController =
-        LocalSoftwareKeyboardController.current
+    val keyboardController = LocalSoftwareKeyboardController.current
 
     Row(
         modifier = modifier
-            .background(
-                DvexSurfaceDark,
-                CutCornerShape(4.dp)
-            )
+            .background(DvexSurfaceDark, CutCornerShape(4.dp))
             .border(
                 width = 1.dp,
                 color = DvexBorderMuted,
                 shape = CutCornerShape(4.dp)
             )
-            .padding(
-                horizontal = 8.dp,
-                vertical = 4.dp
-            ),
+            .padding(horizontal = 8.dp, vertical = 4.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
 
         BasicTextField(
             value = commandText,
-            onValueChange = {
-                commandText = it
-            },
+            onValueChange = { commandText = it },
             modifier = Modifier
                 .weight(1f)
-                .padding(
-                    horizontal = 6.dp,
-                    vertical = 6.dp
-                ),
+                .padding(horizontal = 6.dp, vertical = 6.dp),
             textStyle = TextStyle(
                 fontFamily = FontFamily.Monospace,
                 fontSize = 12.sp,
                 fontWeight = FontWeight.Medium,
                 color = DvexTextPrimary
             ),
-            cursorBrush = SolidColor(
-                DvexNeonRedBright
-            ),
+            cursorBrush = SolidColor(DvexNeonRedBright),
             singleLine = true,
             keyboardOptions = KeyboardOptions(
                 imeAction = ImeAction.Send,
@@ -1009,37 +899,24 @@ fun TacticalCommandInput(
             keyboardActions = KeyboardActions(
                 onSend = {
                     if (commandText.isNotBlank()) {
-
-                        val command =
-                            commandText.trim()
-
+                        val command = commandText.trim()
                         commandText = ""
-
                         keyboardController?.hide()
                         focusManager.clearFocus()
-
                         onSendCommand(command)
                     }
                 }
             ),
             decorationBox = { innerTextField ->
-
-                Box(
-                    contentAlignment =
-                        Alignment.CenterStart
-                ) {
-
+                Box(contentAlignment = Alignment.CenterStart) {
                     if (commandText.isEmpty()) {
                         Text(
-                            text =
-                                "Enter tactical command...",
-                            fontFamily =
-                                FontFamily.Monospace,
+                            text = "Enter tactical command...",
+                            fontFamily = FontFamily.Monospace,
                             fontSize = 11.sp,
                             color = DvexTextMuted
                         )
                     }
-
                     innerTextField()
                 }
             }
@@ -1047,94 +924,50 @@ fun TacticalCommandInput(
 
         Spacer(modifier = Modifier.width(6.dp))
 
-        val isSendEnabled =
-            commandText.isNotBlank()
+        val isSendEnabled = commandText.isNotBlank()
 
         Box(
             modifier = Modifier
-                .clip(
-                    CutCornerShape(3.dp)
-                )
+                .clip(CutCornerShape(3.dp))
                 .background(
-                    if (isSendEnabled) {
-                        DvexNeonRed
-                    } else {
-                        DvexSurfaceCard
-                    }
+                    if (isSendEnabled) DvexNeonRed else DvexSurfaceCard
                 )
                 .border(
                     width = 1.dp,
-                    color =
-                        if (isSendEnabled) {
-                            DvexNeonRedBright
-                        } else {
-                            DvexBorderMuted
-                        },
+                    color = if (isSendEnabled) DvexNeonRedBright else DvexBorderMuted,
                     shape = CutCornerShape(3.dp)
                 )
-                .clickable(
-                    enabled = isSendEnabled
-                ) {
-
+                .clickable(enabled = isSendEnabled) {
                     if (commandText.isNotBlank()) {
-
-                        val command =
-                            commandText.trim()
-
+                        val command = commandText.trim()
                         commandText = ""
-
                         keyboardController?.hide()
                         focusManager.clearFocus()
-
                         onSendCommand(command)
                     }
                 }
-                .padding(
-                    horizontal = 10.dp,
-                    vertical = 6.dp
-                ),
+                .padding(horizontal = 10.dp, vertical = 6.dp),
             contentAlignment = Alignment.Center
         ) {
 
-            Row(
-                verticalAlignment =
-                    Alignment.CenterVertically
-            ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
 
                 Icon(
-                    imageVector =
-                        Icons.AutoMirrored.Filled.Send,
-                    contentDescription =
-                        "Send tactical command",
-                    tint =
-                        if (isSendEnabled) {
-                            Color.White
-                        } else {
-                            DvexTextMuted
-                        },
-                    modifier =
-                        Modifier.size(13.dp)
+                    imageVector = Icons.AutoMirrored.Filled.Send,
+                    contentDescription = "Send tactical command",
+                    tint = if (isSendEnabled) Color.White else DvexTextMuted,
+                    modifier = Modifier.size(13.dp)
                 )
 
-                Spacer(
-                    modifier =
-                        Modifier.width(4.dp)
-                )
+                Spacer(modifier = Modifier.width(4.dp))
 
                 Text(
                     text = "SEND",
-                    fontFamily =
-                        FontFamily.Monospace,
+                    fontFamily = FontFamily.Monospace,
                     fontSize = 9.sp,
-                    fontWeight =
-                        FontWeight.Bold,
+                    fontWeight = FontWeight.Bold,
                     letterSpacing = 1.sp,
-                    color =
-                        if (isSendEnabled) {
-                            Color.White
-                        } else {
-                            DvexTextMuted
-                        }
+                    color = if (isSendEnabled) Color.White else DvexTextMuted
                 )
             }
         }
