@@ -1,4 +1,5 @@
 name: Build and Release APK
+
 on:
   push:
     branches: [ main ]
@@ -10,21 +11,47 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
+
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
           java-version: '17'
+
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
+
+      - name: Make Gradle executable
+        run: chmod +x ./gradlew
+
       - name: Generate debug keystore
-        run: |./gradlew assembleDebug
-          keytool -genkey -v -keystore debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
+        run: |
+          keytool -genkey -v \
+            -keystore debug.keystore \
+            -storepass android \
+            -alias androiddebugkey \
+            -keypass android \
+            -keyalg RSA \
+            -keysize 2048 \
+            -validity 10000 \
+            -dname "CN=Android Debug,O=Android,C=US"
+
       - name: Build APK
-        run: gradle assembleDebug -Dorg.gradle.jvmargs="-Djava.awt.headless=true"
+        run: ./gradlew assembleDebug -Dorg.gradle.jvmargs="-Djava.awt.headless=true"
+
+      - name: Verify APK
+        run: |
+          ls -lh app/build/outputs/apk/debug/app-debug.apk
+
       - name: Create Release with APK
         uses: softprops/action-gh-release@v2
         with:
           tag_name: build-${{ github.run_number }}
+          name: D-VEX Build ${{ github.run_number }}
+          body: |
+            D-VEX APK build ${{ github.run_number }}
           files: app/build/outputs/apk/debug/app-debug.apk
