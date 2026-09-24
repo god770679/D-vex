@@ -1,6 +1,5 @@
 package com.example.brain
 
-import java.util.LinkedList
 import java.util.Locale
 
 enum class EstimatedTone {
@@ -26,8 +25,7 @@ class ConversationContext(
     private val maxHistorySize: Int = 10
 ) {
 
-    private val history =
-        LinkedList<ContextTurn>()
+    private val history = mutableListOf<ContextTurn>()
 
     var lastActiveApp: String? = null
         private set
@@ -38,8 +36,7 @@ class ConversationContext(
     var lastIntent: DvexIntent? = null
         private set
 
-    var lastLanguage: DetectedLanguage =
-        DetectedLanguage.ENGLISH
+    var lastLanguage: DetectedLanguage? = null
         private set
 
     var lastWeatherLocation: String? = null
@@ -58,366 +55,341 @@ class ConversationContext(
     var lastUserInput: String? = null
         private set
 
-    // ------------------------------------------------------------
-    // Update context
-    // ------------------------------------------------------------
-
     fun update(
         userInput: String,
         intent: DvexIntent,
         toolName: String,
-        tone: EstimatedTone,
         language: DetectedLanguage,
+        tone: EstimatedTone,
         spokenResponse: String
     ) {
 
-        val cleanInput =
-            userInput
-                .trim()
-                .replace(
-                    Regex("\\s+"),
-                    " "
-                )
-
-        lastUserInput = cleanInput
+        lastUserInput = userInput
         lastIntent = intent
         lastLanguage = language
         lastEstimatedTone = tone
         lastSpokenResponse = spokenResponse
 
-        history.addLast(
-            ContextTurn(
-                userInput = cleanInput,
-                intent = intent,
-                toolName = toolName,
-                timestamp = System.currentTimeMillis(),
-                tone = tone,
-                language = language
-            )
+        val turn = ContextTurn(
+            userInput = userInput,
+            intent = intent,
+            toolName = toolName,
+            timestamp = System.currentTimeMillis(),
+            tone = tone,
+            language = language
         )
 
-        while (history.size > maxHistorySize) {
-            history.removeFirst()
+        history.add(turn)
+
+        if (history.size > maxHistorySize) {
+            history.removeAt(0)
         }
 
-        updateIntentContext(intent)
+        updateIntentContext(intent, userInput)
     }
 
-    // ------------------------------------------------------------
-    // Intent-specific context
-    // ------------------------------------------------------------
-
     private fun updateIntentContext(
-        intent: DvexIntent
+        intent: DvexIntent,
+        userInput: String
     ) {
 
         when (intent) {
 
             is DvexIntent.OpenApp -> {
+                lastActiveApp = extractValue(
+                    userInput,
+                    listOf(
+                        "open ",
+                        "launch ",
+                        "start ",
+                        "open app "
+                    )
+                )
+            }
 
-                lastActiveApp =
-                    intent.appName
+            is DvexIntent.CloseApp -> {
+                lastActiveApp = extractValue(
+                    userInput,
+                    listOf(
+                        "close ",
+                        "stop ",
+                        "exit "
+                    )
+                )
             }
 
             is DvexIntent.SearchWeb -> {
-
-                lastQuery =
-                    intent.query
+                lastQuery = userInput
             }
 
             is DvexIntent.GetWeather -> {
-
                 lastWeatherLocation =
-                    extractWeatherLocation(intent)
-            }
-
-            is DvexIntent.CallContact -> {
-
-                lastContactRecipient =
-                    intent.recipient
+                    extractWeatherLocation(intent, userInput)
             }
 
             is DvexIntent.SendMessage -> {
-
                 lastContactRecipient =
-                    intent.recipient
+                    extractContactName(userInput)
             }
 
-            is DvexIntent.SendEmail -> {
-
+            is DvexIntent.MakeCall -> {
                 lastContactRecipient =
-                    intent.recipient
+                    extractContactName(userInput)
             }
 
             else -> Unit
         }
     }
 
-    // ------------------------------------------------------------
-    // Weather location helper
-    // ------------------------------------------------------------
-
     private fun extractWeatherLocation(
-        intent: DvexIntent.GetWeather
+        intent: DvexIntent,
+        userInput: String
     ): String? {
 
-        return try {
+        /*
+         * First try to read a possible location
+         * property from the intent.
+         */
+        try {
 
-            /*
-             * This intentionally avoids depending on a specific
-             * property name from GetWeather.
-             *
-             * If your GetWeather contains a location property,
-             * reflection picks it up safely.
-             */
+            val fields = intent::class.java.declaredFields
 
-            val possibleNames =
-                listOf(
-                    "location",
-                    "city",
-                    "place"
+            for (field in fields) {
+
+                field.isAccessible = true
+
+                val name = field.name.lowercase(
+                    Locale.getDefault()
                 )
 
-            for (name in possibleNames) {
+                if (
+                    name.contains("location") ||
+                    name.contains("city") ||
+                    name.contains("place")
+                ) {
 
-                try {
+                    val value =
+                        field.get(intent)?.toString()
 
-                    val field =
-                        intent.javaClass
-                            .declaredFields
-                            .firstOrNull {
-                                it.name.equals(
-                                    name,
-                                    ignoreCase = true
-                                )
-                            }
-
-                    if (field != null) {
-
-                        field.isAccessible = true
-
-                        val value =
-                            field.get(intent)
-                                ?.toString()
-                                ?.trim()
-
-                        if (!value.isNullOrBlank()) {
-                            return value
-                        }
+                    if (!value.isNullOrBlank()) {
+                        return value.trim()
                     }
-
-                } catch (_: Exception) {
-                    // Continue checking.
                 }
             }
 
-            null
-
         } catch (_: Exception) {
-            null
+            // Ignore reflection errors.
         }
+
+        val text = userInput
+            .trim()
+
+        val markers = listOf(
+            "weather in ",
+            "weather at ",
+            "weather for ",
+            "climate in ",
+            "climate at ",
+            "temperature in ",
+            "temperature at ",
+            "weather ",
+            "வானிலை "
+        )
+
+        for (marker in markers) {
+
+            if (
+                text.lowercase(Locale.getDefault())
+                    .startsWith(marker)
+            ) {
+
+                val location = text
+                    .substring(marker.length)
+                    .trim()
+
+                if (location.isNotBlank()) {
+                    return location
+                }
+            }
+        }
+
+        return null
     }
 
-    // ------------------------------------------------------------
-    // Recent history
-    // ------------------------------------------------------------
+    private fun extractContactName(
+        input: String
+    ): String? {
+
+        val text = input.trim()
+
+        val patterns = listOf(
+            "call ",
+            "call to ",
+            "message ",
+            "text ",
+            "send message to ",
+            "send a message to "
+        )
+
+        for (pattern in patterns) {
+
+            if (
+                text.lowercase(Locale.getDefault())
+                    .startsWith(pattern)
+            ) {
+
+                val name = text
+                    .substring(pattern.length)
+                    .trim()
+
+                if (name.isNotBlank()) {
+                    return name
+                }
+            }
+        }
+
+        return null
+    }
+
+    private fun extractValue(
+        input: String,
+        prefixes: List<String>
+    ): String? {
+
+        val text = input.trim()
+
+        for (prefix in prefixes) {
+
+            if (
+                text.lowercase(Locale.getDefault())
+                    .startsWith(prefix)
+            ) {
+
+                val value = text
+                    .substring(prefix.length)
+                    .trim()
+
+                if (value.isNotBlank()) {
+                    return value
+                }
+            }
+        }
+
+        return null
+    }
 
     fun getRecentHistory(): List<ContextTurn> {
-
         return history.toList()
     }
 
-    fun getRecentUserInputs(
-        count: Int = 5
-    ): List<String> {
-
-        return history
-            .takeLast(count)
-            .map {
-                it.userInput
-            }
+    fun getRecentUserInputs(): List<String> {
+        return history.map { it.userInput }
     }
 
     fun getLastTurn(): ContextTurn? {
-
         return history.lastOrNull()
     }
 
-    // ------------------------------------------------------------
-    // Contextual follow-up resolver
-    // ------------------------------------------------------------
+    fun hasPreviousConversation(): Boolean {
+        return history.isNotEmpty()
+    }
+
+    fun hasPreviousContact(): Boolean {
+        return !lastContactRecipient.isNullOrBlank()
+    }
+
+    fun hasPreviousApp(): Boolean {
+        return !lastActiveApp.isNullOrBlank()
+    }
+
+    fun hasPreviousSearch(): Boolean {
+        return !lastQuery.isNullOrBlank()
+    }
+
+    fun hasPreviousWeather(): Boolean {
+        return !lastWeatherLocation.isNullOrBlank()
+    }
 
     fun resolveContextualFollowUp(
-        cleanInput: String
+        userInput: String
     ): String? {
 
-        val input =
-            cleanInput
-                .lowercase(Locale.ROOT)
-                .trim()
-
-        if (input.isBlank()) {
-            return null
-        }
-
-        // --------------------------------------------------------
-        // Repeat
-        // --------------------------------------------------------
+        val text = userInput
+            .lowercase(Locale.getDefault())
+            .trim()
 
         if (
-            input == "repeat" ||
-            input == "repeat that" ||
-            input == "say again" ||
-            input == "again" ||
-            input.contains("marubadi") ||
-            input.contains("marupadi") ||
-            input.contains("thirumba sollu") ||
-            input.contains("திரும்ப சொல்லு")
+            text == "again" ||
+            text == "repeat" ||
+            text.contains("say again") ||
+            text.contains("thirumba sollu") ||
+            text.contains("marubadi sollu")
         ) {
-
             return lastSpokenResponse
         }
 
-        // --------------------------------------------------------
-        // Previous app
-        // --------------------------------------------------------
-
         if (
-            lastActiveApp != null &&
-            (
-                input.contains("that app") ||
-                input.contains("same app") ||
-                input.contains("andha app") ||
-                input.contains("antha app") ||
-                input.contains("அந்த app")
-            )
+            text.contains("same app") ||
+            text.contains("that app") ||
+            text.contains("andha app")
         ) {
-
             return lastActiveApp
         }
 
-        // --------------------------------------------------------
-        // Previous contact
-        // --------------------------------------------------------
-
         if (
-            lastContactRecipient != null &&
-            (
-                input.contains("him") ||
-                input.contains("her") ||
-                input.contains("them") ||
-                input.contains("that person") ||
-                input.contains("avan") ||
-                input.contains("ava") ||
-                input.contains("avanga") ||
-                input.contains("andha person") ||
-                input.contains("antha person")
-            )
+            text.contains("same person") ||
+            text.contains("that person") ||
+            text.contains("andha person")
         ) {
-
             return lastContactRecipient
         }
 
-        // --------------------------------------------------------
-        // Previous search
-        // --------------------------------------------------------
-
         if (
-            lastQuery != null &&
-            (
-                input.contains("search that again") ||
-                input.contains("search it again") ||
-                input.contains("again search") ||
-                input.contains("adha search") ||
-                input.contains("atha search")
-            )
+            text.contains("same search") ||
+            text.contains("that search") ||
+            text.contains("andha search")
         ) {
-
             return lastQuery
         }
 
-        // --------------------------------------------------------
-        // Weather follow-up
-        // --------------------------------------------------------
-
         if (
-            lastWeatherLocation != null &&
-            (
-                input.contains("tomorrow") ||
-                input.contains("next day") ||
-                input.contains("naala") ||
-                input.contains("naalai") ||
-                input.contains("நாளை")
-            )
+            text.contains("there") ||
+            text.contains("same place") ||
+            text.contains("that place")
         ) {
-
             return lastWeatherLocation
         }
 
         return null
     }
 
-    // ------------------------------------------------------------
-    // Previous-context checks
-    // ------------------------------------------------------------
-
-    fun hasPreviousConversation(): Boolean {
-
-        return history.isNotEmpty()
-    }
-
-    fun hasPreviousContact(): Boolean {
-
-        return !lastContactRecipient.isNullOrBlank()
-    }
-
-    fun hasPreviousApp(): Boolean {
-
-        return !lastActiveApp.isNullOrBlank()
-    }
-
-    fun hasPreviousSearch(): Boolean {
-
-        return !lastQuery.isNullOrBlank()
-    }
-
-    fun hasPreviousWeather(): Boolean {
-
-        return !lastWeatherLocation.isNullOrBlank()
-    }
-
-    // ------------------------------------------------------------
-    // Context summary
-    // ------------------------------------------------------------
-
     fun getContextSummary(): String {
 
-        val parts =
-            mutableListOf<String>()
+        val parts = mutableListOf<String>()
 
         lastActiveApp?.let {
-            parts.add("lastApp=$it")
+            parts.add("Last app: $it")
         }
 
         lastQuery?.let {
-            parts.add("lastQuery=$it")
-        }
-
-        lastContactRecipient?.let {
-            parts.add("lastContact=$it")
+            parts.add("Last search: $it")
         }
 
         lastWeatherLocation?.let {
-            parts.add("lastWeather=$it")
+            parts.add("Last weather location: $it")
         }
 
-        parts.add(
-            "lastTone=$lastEstimatedTone"
-        )
+        lastContactRecipient?.let {
+            parts.add("Last contact: $it")
+        }
 
-        parts.add(
-            "lastLanguage=$lastLanguage"
-        )
+        lastEstimatedTone.let {
+            parts.add("Last tone: $it")
+        }
+
+        lastLanguage?.let {
+            parts.add("Last language: $it")
+        }
 
         return if (parts.isEmpty()) {
             "No previous context."
@@ -426,10 +398,6 @@ class ConversationContext(
         }
     }
 
-    // ------------------------------------------------------------
-    // Clear short-term context
-    // ------------------------------------------------------------
-
     fun clear() {
 
         history.clear()
@@ -437,16 +405,10 @@ class ConversationContext(
         lastActiveApp = null
         lastQuery = null
         lastIntent = null
-
-        lastLanguage =
-            DetectedLanguage.ENGLISH
-
+        lastLanguage = null
         lastWeatherLocation = null
         lastContactRecipient = null
-
-        lastEstimatedTone =
-            EstimatedTone.NEUTRAL
-
+        lastEstimatedTone = EstimatedTone.NEUTRAL
         lastSpokenResponse = null
         lastUserInput = null
     }
