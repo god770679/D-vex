@@ -3,232 +3,137 @@ package com.example.brain
 import android.util.Log
 import java.util.Locale
 
-/**
- * D-VEX Natural Personality Response Engine
- *
- * Goal:
- * - Natural human-like conversation
- * - Lovely bestie personality
- * - Smart + calm + confident
- * - Tamil / Tanglish / English matching
- * - Emotion-aware responses
- * - Short replies for short inputs
- * - Better continuity with ConversationContext
- * - Avoid repetitive robotic responses
- * - Never pretend to know something it doesn't know
- *
- * Personality:
- *   Calm        -> never panics
- *   Caring      -> notices emotional cues
- *   Smart       -> understands meaning instead of exact phrases
- *   Friendly    -> feels like a close bestie
- *   Respectful  -> keeps "Sir" naturally, not every sentence
- *   Cinematic   -> subtle JARVIS-style confidence
- */
 class DvexResponseGenerator {
 
-    // ---------------------------------------------------------------------
-    // Tone estimation
-    // ---------------------------------------------------------------------
-
-    fun estimateTone(userInput: String): EstimatedTone {
-
-        val text = normalize(userInput)
-
-        if (text.isBlank()) {
-            return EstimatedTone.NEUTRAL
-        }
-
-        // IMPORTANT:
-        // Check urgent/frustrated/confused before happy/excited because
-        // some users mix words such as "super urgent" or "mass but not working".
-
-        if (containsAny(
-                text,
-                "urgent",
-                "urgently",
-                "emergency",
-                "immediately",
-                "right now",
-                "asap",
-                "hurry",
-                "quick",
-                "quickly",
-                "fast",
-                "seekiram",
-                "seekirama",
-                "udane",
-                "ippove",
-                "avacharam",
-                "avasaram",
-                "vegam",
-                "vegama",
-                "உடனே",
-                "சீக்கிரம்",
-                "சீக்கிரமா",
-                "அவசரம்"
-            )
-        ) {
-            return EstimatedTone.URGENT
-        }
-
-        if (containsAny(
-                text,
-                "angry",
-                "annoying",
-                "annoyed",
-                "stupid",
-                "worst",
-                "waste",
-                "hate",
-                "not working",
-                "doesn't work",
-                "doesnt work",
-                "useless",
-                "shut up",
-                "frustrated",
-                "frustrating",
-                "irritating",
-                "irritated",
-                "tension",
-                "kaduppu",
-                "kaduppa",
-                "kadupethatha",
-                "erichal",
-                "erichala",
-                "worstu",
-                "wasteu",
-                "vela seiyala",
-                "vela pakkala",
-                "ennada idhu",
-                "thirumba thirumba",
-                "pogala",
-                "pogave mattenguthu",
-                "mattenguthu",
-                "சரியா போகல",
-                "மாட்டேங்குது",
-                "கடுப்பு",
-                "எரிச்சல்"
-            )
-        ) {
-            return EstimatedTone.FRUSTRATED
-        }
-
-        if (containsAny(
-                text,
-                "what do you mean",
-                "confused",
-                "confusing",
-                "don't understand",
-                "dont understand",
-                "how come",
-                "not clear",
-                "i don't get it",
-                "i dont get it",
-                "puriyala",
-                "purila",
-                "puriyave illa",
-                "enna solra",
-                "enna soldra",
-                "enna aachu",
-                "theriyala",
-                "புரியவில்லை",
-                "புரியல",
-                "என்ன சொல்ற",
-                "விளங்கவில்லை"
-            )
-        ) {
-            return EstimatedTone.CONFUSED
-        }
-
-        if (containsAny(
-                text,
-                "sad",
-                "feeling down",
-                "feeling low",
-                "bad day",
-                "unhappy",
-                "upset",
-                "heartbroken",
-                "crying",
-                "alone",
-                "lonely",
-                "sogam",
-                "sogama",
-                "kashtama",
-                "kashtam",
-                "vali thaangala",
-                "kavalaya",
-                "kavalai",
-                "manasu sari illa",
-                "manasu sariyilla",
-                "சோகம்",
-                "கஷ்டமா இருக்கு",
-                "மனசு சரியில்லை",
-                "வருத்தம்",
-                "கவலை",
-                "தனியா"
-            )
-        ) {
-            return EstimatedTone.SAD
-        }
-
-        if (containsAny(
-                text,
-                "wow",
-                "amazing",
-                "lets go",
-                "let's go",
-                "unbelievable",
-                "vera level",
-                "mass kaatita",
-                "massu",
-                "mass",
-                "excited",
-                "awesome",
-                "fire",
-                "superb",
-                "brilliant",
-                "marana mass",
-                "sema mass",
-                "வேற லெவல்",
-                "வேற மாறி"
-            )
-        ) {
-            return EstimatedTone.EXCITED
-        }
-
-        if (containsAny(
-                text,
-                "super",
-                "great",
-                "wonderful",
-                "happy",
-                "glad",
-                "thank you",
-                "thanks",
-                "love it",
-                "semma",
-                "kalakkita",
-                "arputham",
-                "good job",
-                "well done",
-                "romba nandri",
-                "மகிழ்ச்சி",
-                "சூப்பர்",
-                "அற்புதம்",
-                "நன்றி"
-            )
-        ) {
-            return EstimatedTone.HAPPY
-        }
-
-        return EstimatedTone.NEUTRAL
+    companion object {
+        private const val TAG = "DvexResponseGenerator"
     }
 
-    // ---------------------------------------------------------------------
-    // Main response generator
-    // ---------------------------------------------------------------------
+    private data class MemoryProfile(
+        val preferredName: String? = null,
+        val replyStyle: String? = null,
+        val personality: String? = null,
+        val languagePreference: String? = null
+    )
+
+    fun estimateTone(userInput: String): EstimatedTone {
+        val text = userInput.lowercase(Locale.getDefault()).trim()
+
+        if (text.isBlank()) return EstimatedTone.NEUTRAL
+
+        val urgentWords = listOf(
+            "urgent",
+            "emergency",
+            "help me now",
+            "quick",
+            "quickly",
+            "immediately",
+            "asap",
+            "அவசரம்",
+            "அவசரமா",
+            "உடனே",
+            "seekiram",
+            "seekkiram"
+        )
+
+        val frustratedWords = listOf(
+            "annoying",
+            "frustrated",
+            "frustrating",
+            "irritated",
+            "angry",
+            "hate this",
+            "not working",
+            "why isn't",
+            "why isnt",
+            "kadupa",
+            "kadupu",
+            "erichal",
+            "erichala",
+            "kovam",
+            "பிடிக்கல",
+            "எரிச்சல்",
+            "கோபம்"
+        )
+
+        val sadWords = listOf(
+            "sad",
+            "upset",
+            "depressed",
+            "lonely",
+            "alone",
+            "crying",
+            "cry",
+            "hurt",
+            "bad day",
+            "miss",
+            "feeling low",
+            "feel low",
+            "sogama",
+            "sogam",
+            "kastama",
+            "kastam",
+            "azhuga",
+            "அழுகை",
+            "சோகம்",
+            "கஷ்டம்",
+            "தனியா"
+        )
+
+        val confusedWords = listOf(
+            "confused",
+            "don't understand",
+            "dont understand",
+            "not understand",
+            "what do you mean",
+            "how",
+            "why",
+            "puriyala",
+            "puriyavae illa",
+            "puriyalae",
+            "எப்படி",
+            "ஏன்",
+            "புரியல"
+        )
+
+        val excitedWords = listOf(
+            "wow",
+            "awesome",
+            "amazing",
+            "excited",
+            "yay",
+            "super",
+            "semma",
+            "vera level",
+            "mass",
+            "செம்ம",
+            "அருமை"
+        )
+
+        val happyWords = listOf(
+            "happy",
+            "great",
+            "good",
+            "nice",
+            "love it",
+            "thanks",
+            "thank you",
+            "nandri",
+            "sandhosham",
+            "சந்தோஷம்",
+            "நன்றி"
+        )
+
+        return when {
+            containsAny(text, urgentWords) -> EstimatedTone.URGENT
+            containsAny(text, frustratedWords) -> EstimatedTone.FRUSTRATED
+            containsAny(text, sadWords) -> EstimatedTone.SAD
+            containsAny(text, confusedWords) -> EstimatedTone.CONFUSED
+            containsAny(text, excitedWords) -> EstimatedTone.EXCITED
+            containsAny(text, happyWords) -> EstimatedTone.HAPPY
+            else -> EstimatedTone.NEUTRAL
+        }
+    }
 
     fun generateResponse(
         intent: DvexIntent,
@@ -236,1407 +141,964 @@ class DvexResponseGenerator {
         language: DetectedLanguage,
         userInput: String = "",
         context: ConversationContext? = null,
-        tone: EstimatedTone = estimateTone(userInput)
+        tone: EstimatedTone = estimateTone(userInput),
+        memoryHint: String = ""
     ): String {
 
-        val normalizedInput = normalize(userInput)
+        val memory = parseMemory(memoryHint)
 
-        // ---------------------------------------------------------------
-        // Repeat request
-        // ---------------------------------------------------------------
-
-        if (isRepeatRequest(normalizedInput)) {
-
-            val previous = context?.lastSpokenResponse
-
-            if (!previous.isNullOrBlank()) {
-
-                return when (language) {
-
-                    DetectedLanguage.TAMIL ->
-                        "கடைசியாக நான் சொன்னது: $previous"
-
-                    DetectedLanguage.TANGLISH ->
-                        "Naan last-aa sonnathu: $previous"
-
-                    DetectedLanguage.ENGLISH ->
-                        "I said: $previous"
-                }
-            }
-        }
-
-        // ---------------------------------------------------------------
-        // Low-confidence speech
-        // ---------------------------------------------------------------
-
-        if (intent is DvexIntent.LowConfidence) {
-
-            val clarification =
-                generateClarification(
-                    language = language,
-                    candidateIntent = intent.candidateIntent
-                )
-
-            Log.i(
-                TAG,
-                "Clarification response: $clarification"
-            )
-
-            return clarification
-        }
-
-        // ---------------------------------------------------------------
-        // Context-aware acknowledgement
-        // ---------------------------------------------------------------
-
-        if (
-            intent is DvexIntent.Conversation &&
-            isSimpleAcknowledgement(normalizedInput)
-        ) {
-
-            return generateAcknowledgement(
-                language,
-                tone
-            )
-        }
-
-        // ---------------------------------------------------------------
-        // Generate response
-        // ---------------------------------------------------------------
-
-        val response =
-            when (language) {
-
-                DetectedLanguage.ENGLISH ->
-                    generateEnglishResponse(
-                        intent,
-                        toolResult,
-                        tone,
-                        context,
-                        normalizedInput
-                    )
-
-                DetectedLanguage.TANGLISH ->
-                    generateTanglishResponse(
-                        intent,
-                        toolResult,
-                        tone,
-                        context,
-                        normalizedInput
-                    )
-
-                DetectedLanguage.TAMIL ->
-                    generateTamilResponse(
-                        intent,
-                        toolResult,
-                        tone,
-                        context,
-                        normalizedInput
-                    )
-            }
-
-        Log.i(
+        Log.d(
             TAG,
-            "Generated response | language=$language | tone=$tone | response=$response"
+            "Generating response | language=$language tone=$tone memory=$memory"
         )
 
-        return response
+        // Repeat request
+        if (isRepeatRequest(userInput) && context != null) {
+            val previous = context.lastSpokenResponse
+
+            if (!previous.isNullOrBlank()) {
+                return personalizeResponse(
+                    previous,
+                    memory,
+                    language,
+                    tone,
+                    userInput
+                )
+            }
+        }
+
+        val baseResponse = when (language) {
+
+            DetectedLanguage.TAMIL -> {
+                generateTamilResponse(
+                    intent = intent,
+                    toolResult = toolResult,
+                    userInput = userInput,
+                    tone = tone,
+                    context = context
+                )
+            }
+
+            DetectedLanguage.TANGLISH -> {
+                generateTanglishResponse(
+                    intent = intent,
+                    toolResult = toolResult,
+                    userInput = userInput,
+                    tone = tone,
+                    context = context
+                )
+            }
+
+            else -> {
+                generateEnglishResponse(
+                    intent = intent,
+                    toolResult = toolResult,
+                    userInput = userInput,
+                    tone = tone,
+                    context = context
+                )
+            }
+        }
+
+        return personalizeResponse(
+            response = baseResponse,
+            memory = memory,
+            language = language,
+            tone = tone,
+            userInput = userInput
+        )
     }
 
-    // =====================================================================
-    // ENGLISH
-    // =====================================================================
+    // ============================================================
+    // MEMORY
+    // ============================================================
 
-    private fun generateEnglishResponse(
-        intent: DvexIntent,
-        toolResult: DvexToolResult,
+    private fun parseMemory(memoryHint: String): MemoryProfile {
+
+        if (memoryHint.isBlank()) {
+            return MemoryProfile()
+        }
+
+        return MemoryProfile(
+            preferredName = extractMemoryValue(
+                memoryHint,
+                "User prefers to be called"
+            ),
+            replyStyle = extractMemoryValue(
+                memoryHint,
+                "Preferred reply style"
+            ),
+            personality = extractMemoryValue(
+                memoryHint,
+                "Preferred assistant personality"
+            ),
+            languagePreference = extractMemoryValue(
+                memoryHint,
+                "Preferred language style"
+            )
+        )
+    }
+
+    private fun extractMemoryValue(
+        memoryHint: String,
+        prefix: String
+    ): String? {
+
+        val line = memoryHint
+            .lines()
+            .firstOrNull {
+                it.trim()
+                    .startsWith(prefix, ignoreCase = true)
+            }
+            ?: return null
+
+        val value = line
+            .substringAfter(":", "")
+            .trim()
+
+        if (value.isNotBlank()) {
+            return value
+        }
+
+        // Handles:
+        // "User prefers to be called Alex."
+        val afterPrefix = line
+            .substringAfter(prefix, "")
+            .trim()
+            .trim('.')
+
+        return afterPrefix.ifBlank { null }
+    }
+
+    private fun personalizeResponse(
+        response: String,
+        memory: MemoryProfile,
+        language: DetectedLanguage,
         tone: EstimatedTone,
-        context: ConversationContext?,
         userInput: String
     ): String {
 
-        return when (toolResult.status) {
-
-            // -------------------------------------------------------------
-            // NOT FOUND
-            // -------------------------------------------------------------
-
-            DvexToolStatus.NOT_FOUND -> {
-
-                if (toolResult.spokenText.isNotBlank()) {
-
-                    toolResult.spokenText
-
-                } else {
-
-                    when (intent) {
-
-                        is DvexIntent.OpenApp ->
-                            "I couldn't find ${intent.appName} on your phone."
-
-                        is DvexIntent.CallContact ->
-                            "I couldn't find ${intent.recipient} in your contacts."
-
-                        is DvexIntent.SendMessage ->
-                            "I couldn't find ${intent.recipient} in your contacts."
-
-                        is DvexIntent.SendEmail ->
-                            "I couldn't find an email address for ${intent.recipient}."
-
-                        else ->
-                            "I couldn't find that."
-                    }
-                }
-            }
-
-            // -------------------------------------------------------------
-            // PERMISSION
-            // -------------------------------------------------------------
-
-            DvexToolStatus.PERMISSION_REQUIRED -> {
-
-                toolResult.spokenText.ifBlank {
-                    "I need permission for that, Sir."
-                }
-            }
-
-            // -------------------------------------------------------------
-            // CONFIRMATION
-            // -------------------------------------------------------------
-
-            DvexToolStatus.CONFIRMATION_REQUIRED -> {
-
-                toolResult.confirmationPrompt
-                    ?: when (intent) {
-
-                        is DvexIntent.CallContact -> {
-
-                            if (tone == EstimatedTone.URGENT) {
-                                "I can call ${intent.recipient} right now. Confirm?"
-                            } else {
-                                "Should I call ${intent.recipient}?"
-                            }
-                        }
-
-                        is DvexIntent.SendMessage -> {
-
-                            if (intent.isWhatsApp) {
-                                "Should I send this WhatsApp message to ${intent.recipient}?"
-                            } else {
-                                "Should I send this message to ${intent.recipient}?"
-                            }
-                        }
-
-                        is DvexIntent.SendEmail ->
-                            "Should I send this email to ${intent.recipient}?"
-
-                        else ->
-                            "Want me to go ahead with that?"
-                    }
-            }
-
-            // -------------------------------------------------------------
-            // UNSUPPORTED
-            // -------------------------------------------------------------
-
-            DvexToolStatus.UNSUPPORTED -> {
-
-                toolResult.spokenText.ifBlank {
-                    "I can't do that on this device yet."
-                }
-            }
-
-            // -------------------------------------------------------------
-            // FAILED
-            // -------------------------------------------------------------
-
-            DvexToolStatus.FAILED -> {
-
-                if (tone == EstimatedTone.FRUSTRATED) {
-
-                    "Yeah, I know that's annoying. Let's fix it together, one step at a time."
-
-                } else {
-
-                    toolResult.spokenText.ifBlank {
-                        "That didn't work. Let's try another way."
-                    }
-                }
-            }
-
-            // -------------------------------------------------------------
-            // ERROR
-            // -------------------------------------------------------------
-
-            DvexToolStatus.ERROR -> {
-
-                "Something went wrong on my side. Give me another try."
-            }
-
-            // -------------------------------------------------------------
-            // SUCCESS
-            // -------------------------------------------------------------
-
-            DvexToolStatus.SUCCESS -> {
-
-                when (intent) {
-
-                    // -----------------------------------------------------
-                    // Greeting
-                    // -----------------------------------------------------
-
-                    is DvexIntent.WakeGreeting -> {
-
-                        when (tone) {
-
-                            EstimatedTone.URGENT ->
-                                "I'm here. Tell me."
-
-                            else ->
-                                "Hey, I'm here. What's up?"
-                        }
-                    }
-
-                    // -----------------------------------------------------
-                    // Calls
-                    // -----------------------------------------------------
-
-                    is DvexIntent.CallContact -> {
-
-                        if (tone == EstimatedTone.URGENT) {
-
-                            "Calling ${intent.recipient} now."
-
-                        } else {
-
-                            toolResult.spokenText.ifBlank {
-                                "Sure. Calling ${intent.recipient}."
-                            }
-                        }
-                    }
-
-                    // -----------------------------------------------------
-                    // Messages
-                    // -----------------------------------------------------
-
-                    is DvexIntent.SendMessage -> {
-
-                        toolResult.spokenText.ifBlank {
-                            "Done. Message sent to ${intent.recipient}."
-                        }
-                    }
-
-                    // -----------------------------------------------------
-                    // Email
-                    // -----------------------------------------------------
-
-                    is DvexIntent.SendEmail -> {
-
-                        toolResult.spokenText.ifBlank {
-                            "Done. Email sent to ${intent.recipient}."
-                        }
-                    }
-
-                    // -----------------------------------------------------
-                    // Open app
-                    // -----------------------------------------------------
-
-                    is DvexIntent.OpenApp -> {
-
-                        if (tone == EstimatedTone.URGENT) {
-
-                            "Opening ${intent.appName} now."
-
-                        } else {
-
-                            toolResult.spokenText.ifBlank {
-                                "Sure. Opening ${intent.appName}."
-                            }
-                        }
-                    }
-
-                    // -----------------------------------------------------
-                    // Navigation
-                    // -----------------------------------------------------
-
-                    is DvexIntent.GoHome ->
-                        "Done."
-
-                    is DvexIntent.GoBack ->
-                        "Done. We're back."
-
-                    is DvexIntent.OpenRecents ->
-                        "Here are your recent apps."
-
-                    is DvexIntent.OpenNotifications ->
-                        "Opening your notifications."
-
-                    is DvexIntent.OpenSettings ->
-                        "Opening settings."
-
-                    is DvexIntent.OpenWifiSettings ->
-                        "Opening Wi-Fi settings."
-
-                    // -----------------------------------------------------
-                    // Device
-                    // -----------------------------------------------------
-
-                    is DvexIntent.ToggleFlashlight -> {
-
-                        toolResult.spokenText.ifBlank {
-                            "Flashlight updated."
-                        }
-                    }
-
-                    is DvexIntent.SetAlarm -> {
-
-                        toolResult.spokenText.ifBlank {
-                            "Alarm set."
-                        }
-                    }
-
-                    is DvexIntent.SetTimer -> {
-
-                        toolResult.spokenText.ifBlank {
-                            "Timer started."
-                        }
-                    }
-
-                    is DvexIntent.AdjustVolume -> {
-
-                        toolResult.spokenText.ifBlank {
-                            "Volume adjusted."
-                        }
-                    }
-
-                    is DvexIntent.MediaControl -> {
-
-                        toolResult.spokenText.ifBlank {
-                            "Done."
-                        }
-                    }
-
-                    // -----------------------------------------------------
-                    // Information
-                    // -----------------------------------------------------
-
-                    is DvexIntent.GetTime ->
-                        toolResult.spokenText
-
-                    is DvexIntent.GetWeather ->
-                        toolResult.spokenText
-
-                    is DvexIntent.Calculate ->
-                        toolResult.spokenText
-
-                    // -----------------------------------------------------
-                    // Memory
-                    // -----------------------------------------------------
-
-                    is DvexIntent.RememberFact ->
-                        "Got it. I'll remember that."
-
-                    is DvexIntent.RecallMemory ->
-                        toolResult.spokenText
-
-                    // -----------------------------------------------------
-                    // Multi-step
-                    // -----------------------------------------------------
-
-                    is DvexIntent.MultiStep ->
-                        toolResult.spokenText
-
-                    // -----------------------------------------------------
-                    // Web
-                    // -----------------------------------------------------
-
-                    is DvexIntent.SearchWeb ->
-                        toolResult.spokenText
-
-                    // -----------------------------------------------------
-                    // General question
-                    // -----------------------------------------------------
-
-                    is DvexIntent.GeneralQuestion -> {
-
-                        if (tone == EstimatedTone.CONFUSED) {
-
-                            "Yeah, let me make that simpler: ${toolResult.spokenText}"
-
-                        } else {
-
-                            toolResult.spokenText
-                        }
-                    }
-
-                    // -----------------------------------------------------
-                    // Conversation
-                    // -----------------------------------------------------
-
-                    is DvexIntent.Conversation -> {
-
-                        generateEnglishConversation(
-                            toolResult.spokenText,
-                            tone,
-                            userInput,
-                            context
-                        )
-                    }
-
-                    else -> {
-
-                        toolResult.spokenText.ifBlank {
-                            "Got it."
-                        }
-                    }
-                }
+        if (response.isBlank()) return response
+
+        var result = response.trim()
+
+        /*
+         * Do NOT add the user's name to every message.
+         * That sounds robotic.
+         */
+        val shouldUseName =
+            memory.preferredName != null &&
+                    (
+                            tone == EstimatedTone.SAD ||
+                                    tone == EstimatedTone.FRUSTRATED ||
+                                    tone == EstimatedTone.HAPPY ||
+                                    tone == EstimatedTone.EXCITED ||
+                                    isGreeting(userInput)
+                            )
+
+        if (shouldUseName) {
+
+            val name = memory.preferredName!!.trim()
+
+            if (
+                name.isNotBlank() &&
+                !containsName(result, name)
+            ) {
+                result = addNaturalName(
+                    result,
+                    name,
+                    language,
+                    tone
+                )
             }
         }
-    }
 
-    private fun generateEnglishConversation(
-        existingText: String,
-        tone: EstimatedTone,
-        userInput: String,
-        context: ConversationContext?
-    ): String {
+        /*
+         * Reply style
+         */
+        val style = memory.replyStyle
+            ?.lowercase(Locale.getDefault())
+            ?: ""
 
-        return when (tone) {
-
-            EstimatedTone.SAD -> {
-
-                when {
-
-                    containsAny(
-                        userInput,
-                        "alone",
-                        "lonely",
-                        "nobody",
-                        "no one"
-                    ) ->
-                        "Hey... you're not alone right now. I'm here. Tell me what's going on."
-
-                    else ->
-                        "Hey... I get you. You don't have to pretend you're okay with me. Tell me what happened."
-                }
-            }
-
-            EstimatedTone.FRUSTRATED -> {
-
-                "Yeah, I get why that's frustrating. Don't worry — we'll sort it out together. Tell me what went wrong."
-            }
-
-            EstimatedTone.CONFUSED -> {
-
-                "No worries. Let's make it simple. Tell me which part is confusing you."
-            }
-
-            EstimatedTone.EXCITED -> {
-
-                "Haha, I like that energy. Let's do it."
-            }
-
-            EstimatedTone.HAPPY -> {
-
-                "That's nice to hear. I'm glad you're feeling good."
-            }
-
-            EstimatedTone.URGENT -> {
-
-                "I'm with you. Tell me what you need right now."
-            }
-
-            EstimatedTone.NEUTRAL -> {
-
-                if (isHelpSeeking(userInput)) {
-
-                    "Of course. Tell me what's going on."
-
-                } else {
-
-                    existingText.ifBlank {
-                        "I'm here. Tell me."
-                    }
-                }
-            }
+        if (style.contains("short") ||
+            style.contains("concise") ||
+            style.contains("brief")
+        ) {
+            result = makeConcise(result)
         }
-    }
 
-    // =====================================================================
-    // TANGLISH
-    // =====================================================================
-
-    private fun generateTanglishResponse(
-        intent: DvexIntent,
-        toolResult: DvexToolResult,
-        tone: EstimatedTone,
-        context: ConversationContext?,
-        userInput: String
-    ): String {
-
-        return when (toolResult.status) {
-
-            DvexToolStatus.NOT_FOUND -> {
-
-                when (intent) {
-
-                    is DvexIntent.OpenApp ->
-                        "${intent.appName} unga phone-la illa."
-
-                    is DvexIntent.CallContact ->
-                        "${intent.recipient} contact kedaikala."
-
-                    is DvexIntent.SendMessage ->
-                        "${intent.recipient} contact kedaikala."
-
-                    is DvexIntent.SendEmail ->
-                        "${intent.recipient}-ku email address kedaikala."
-
-                    else ->
-                        toolResult.spokenText.ifBlank {
-                            "Athu kedaikala."
-                        }
-                }
-            }
-
-            DvexToolStatus.PERMISSION_REQUIRED -> {
-
-                toolResult.spokenText.ifBlank {
-                    "Intha action-ku permission venum."
-                }
-            }
-
-            DvexToolStatus.CONFIRMATION_REQUIRED -> {
-
-                toolResult.confirmationPrompt
-                    ?: when (intent) {
-
-                        is DvexIntent.CallContact -> {
-
-                            if (tone == EstimatedTone.URGENT) {
-                                "${intent.recipient}-ku ippove call pannattuma?"
-                            } else {
-                                "${intent.recipient}-ku call pannattuma?"
-                            }
-                        }
-
-                        is DvexIntent.SendMessage -> {
-
-                            if (intent.isWhatsApp) {
-                                "${intent.recipient}-ku WhatsApp message anuppattuma?"
-                            } else {
-                                "${intent.recipient}-ku message anuppattuma?"
-                            }
-                        }
-
-                        is DvexIntent.SendEmail ->
-                            "${intent.recipient}-ku email anuppattuma?"
-
-                        else ->
-                            "Okay. Idha proceed pannattuma?"
-                    }
-            }
-
-            DvexToolStatus.UNSUPPORTED -> {
-
-                toolResult.spokenText.ifBlank {
-                    "Intha action indha phone-la support aagala."
-                }
-            }
-
-            DvexToolStatus.FAILED -> {
-
-                if (tone == EstimatedTone.FRUSTRATED) {
-
-                    "Aama, konjam kadupa irukkum. Puriyudhu. Namma rendu perum serndhu step-by-step fix pannalaam."
-
-                } else {
-
-                    toolResult.spokenText.ifBlank {
-                        "Athu work aagala. Vera way try pannalaam."
-                    }
-                }
-            }
-
-            DvexToolStatus.ERROR -> {
-
-                "En side-la konjam problem vandhuduchu. Oru thadava marubadi try pannalaam."
-            }
-
-            DvexToolStatus.SUCCESS -> {
-
-                when (intent) {
-
-                    is DvexIntent.WakeGreeting -> {
-
-                        when (tone) {
-
-                            EstimatedTone.URGENT ->
-                                "Yes, naan inga irukken. Sollu."
-
-                            else ->
-                                "Hey, naan inga irukken. Sollu."
-                        }
-                    }
-
-                    is DvexIntent.CallContact -> {
-
-                        if (tone == EstimatedTone.URGENT) {
-
-                            "${intent.recipient}-ku ippove call panren."
-
-                        } else {
-
-                            toolResult.spokenText.ifBlank {
-                                "Sure. ${intent.recipient}-ku call panren."
-                            }
-                        }
-                    }
-
-                    is DvexIntent.SendMessage -> {
-
-                        toolResult.spokenText.ifBlank {
-                            "Done. ${intent.recipient}-ku message anuppiyachu."
-                        }
-                    }
-
-                    is DvexIntent.SendEmail -> {
-
-                        toolResult.spokenText.ifBlank {
-                            "${intent.recipient}-ku email anuppiyachu."
-                        }
-                    }
-
-                    is DvexIntent.OpenApp -> {
-
-                        if (tone == EstimatedTone.URGENT) {
-
-                            "${intent.appName} ippove open panren."
-
-                        } else {
-
-                            toolResult.spokenText.ifBlank {
-                                "Sure. ${intent.appName} open panren."
-                            }
-                        }
-                    }
-
-                    is DvexIntent.GoHome ->
-                        "Home-ku poiyachu."
-
-                    is DvexIntent.GoBack ->
-                        "Back vandhachu."
-
-                    is DvexIntent.OpenRecents ->
-                        "Recent apps kaatren."
-
-                    is DvexIntent.OpenNotifications ->
-                        "Notifications open panren."
-
-                    is DvexIntent.OpenSettings ->
-                        "Settings open panren."
-
-                    is DvexIntent.OpenWifiSettings ->
-                        "Wi-Fi settings open panren."
-
-                    is DvexIntent.ToggleFlashlight -> {
-
-                        val result =
-                            toolResult.spokenText.lowercase(Locale.ROOT)
-
-                        if (result.contains("off")) {
-                            "Flashlight off panniyachu."
-                        } else {
-                            "Flashlight on panniyachu."
-                        }
-                    }
-
-                    is DvexIntent.SetAlarm ->
-                        "Alarm set panniyachu."
-
-                    is DvexIntent.SetTimer ->
-                        "Timer start panniyachu."
-
-                    is DvexIntent.AdjustVolume ->
-                        "Volume adjust panniyachu."
-
-                    is DvexIntent.MediaControl ->
-                        "Done."
-
-                    is DvexIntent.GetTime -> {
-
-                        val raw =
-                            toolResult.spokenText
-                                .replace(
-                                    "The time is ",
-                                    "",
-                                    ignoreCase = true
-                                )
-                                .replace(
-                                    ", Sir.",
-                                    "",
-                                    ignoreCase = true
-                                )
-                                .trim()
-
-                        "Ippo time $raw."
-                    }
-
-                    is DvexIntent.GetWeather ->
-                        "Weather update: ${toolResult.spokenText}"
-
-                    is DvexIntent.Calculate ->
-                        toolResult.spokenText
-
-                    is DvexIntent.RememberFact ->
-                        "Got it. Ninaivil vachukkiten."
-
-                    is DvexIntent.RecallMemory ->
-                        toolResult.spokenText
-
-                    is DvexIntent.MultiStep ->
-                        toolResult.spokenText
-
-                    is DvexIntent.SearchWeb ->
-                        toolResult.spokenText
-
-                    is DvexIntent.GeneralQuestion -> {
-
-                        toolResult.spokenText
-                    }
-
-                    is DvexIntent.Conversation -> {
-
-                        generateTanglishConversation(
-                            toolResult.spokenText,
-                            tone,
-                            userInput,
-                            context
-                        )
-                    }
-
-                    else ->
-                        toolResult.spokenText.ifBlank {
-                            "Okay. Sollu."
-                        }
-                }
-            }
+        /*
+         * Personality
+         */
+        val personality = memory.personality
+            ?.lowercase(Locale.getDefault())
+            ?: ""
+
+        if (
+            personality.contains("bestie") ||
+            personality.contains("friendly") ||
+            personality.contains("lovely") ||
+            personality.contains("warm")
+        ) {
+            result = makeWarm(result, language, tone)
         }
+
+        /*
+         * Language preference is treated only as a style hint.
+         * DetectedLanguage remains the primary source.
+         */
+        return result.trim()
     }
 
-    private fun generateTanglishConversation(
-        existingText: String,
-        tone: EstimatedTone,
-        userInput: String,
-        context: ConversationContext?
-    ): String {
-
-        return when (tone) {
-
-            EstimatedTone.SAD -> {
-
-                when {
-
-                    containsAny(
-                        userInput,
-                        "alone",
-                        "lonely",
-                        "yaarum illa",
-                        "yarum illa"
-                    ) ->
-                        "Hey... nee thaniya illa. Naan inga irukken. Enna aachu nu sollu."
-
-                    else ->
-                        "Hey... puriyudhu. En kitta nee okay-nu nadikka thevai illa. Enna aachu nu sollu."
-                }
-            }
-
-            EstimatedTone.FRUSTRATED -> {
-
-                "Aama, idhu konjam kadupa irukkum. Puriyudhu. Namma serndhu fix pannalaam. Enna problem nu sollu."
-            }
-
-            EstimatedTone.CONFUSED -> {
-
-                "No worries. Namma simple-aa paakalaam. Entha part puriyala nu sollu."
-            }
-
-            EstimatedTone.EXCITED -> {
-
-                "Haha, indha energy super. Va, pannalaam."
-            }
-
-            EstimatedTone.HAPPY -> {
-
-                "Adha kekka nalla irukku. Nee happy-aa irukkaradhu enakkum nice-aa irukku."
-            }
-
-            EstimatedTone.URGENT -> {
-
-                "Naan inga irukken. Ippo enna venum nu sollu."
-            }
-
-            EstimatedTone.NEUTRAL -> {
-
-                if (isHelpSeeking(userInput)) {
-
-                    "Of course. Enna help venum nu sollu."
-
-                } else {
-
-                    existingText.ifBlank {
-                        "Hmm, sollu. Naan kekkaren."
-                    }
-                }
-            }
-        }
-    }
-
-    // =====================================================================
-    // TAMIL
-    // =====================================================================
-
-    private fun generateTamilResponse(
-        intent: DvexIntent,
-        toolResult: DvexToolResult,
-        tone: EstimatedTone,
-        context: ConversationContext?,
-        userInput: String
-    ): String {
-
-        return when (toolResult.status) {
-
-            DvexToolStatus.NOT_FOUND -> {
-
-                when (intent) {
-
-                    is DvexIntent.OpenApp ->
-                        "${intent.appName} உங்கள் போனில் இல்லை."
-
-                    is DvexIntent.CallContact ->
-                        "${intent.recipient} தொடர்பு விவரம் கிடைக்கவில்லை."
-
-                    is DvexIntent.SendMessage ->
-                        "${intent.recipient} தொடர்பு விவரம் கிடைக்கவில்லை."
-
-                    is DvexIntent.SendEmail ->
-                        "${intent.recipient}-க்கு மின்னஞ்சல் முகவரி கிடைக்கவில்லை."
-
-                    else ->
-                        toolResult.spokenText.ifBlank {
-                            "அது கிடைக்கவில்லை."
-                        }
-                }
-            }
-
-            DvexToolStatus.PERMISSION_REQUIRED -> {
-
-                toolResult.spokenText.ifBlank {
-                    "இந்த செயலுக்கு அனுமதி தேவை."
-                }
-            }
-
-            DvexToolStatus.CONFIRMATION_REQUIRED -> {
-
-                toolResult.confirmationPrompt
-                    ?: when (intent) {
-
-                        is DvexIntent.CallContact -> {
-
-                            if (tone == EstimatedTone.URGENT) {
-                                "${intent.recipient}-க்கு இப்போதே கால் செய்யட்டுமா?"
-                            } else {
-                                "${intent.recipient}-க்கு கால் செய்யட்டுமா?"
-                            }
-                        }
-
-                        is DvexIntent.SendMessage -> {
-
-                            if (intent.isWhatsApp) {
-                                "${intent.recipient}-க்கு WhatsApp செய்தி அனுப்பட்டுமா?"
-                            } else {
-                                "${intent.recipient}-க்கு செய்தி அனுப்பட்டுமா?"
-                            }
-                        }
-
-                        is DvexIntent.SendEmail ->
-                            "${intent.recipient}-க்கு மின்னஞ்சல் அனுப்பட்டுமா?"
-
-                        else ->
-                            "சரி. இதை தொடரட்டுமா?"
-                    }
-            }
-
-            DvexToolStatus.UNSUPPORTED -> {
-
-                toolResult.spokenText.ifBlank {
-                    "இந்த போனில் இந்த செயல் இன்னும் support ஆகவில்லை."
-                }
-            }
-
-            DvexToolStatus.FAILED -> {
-
-                if (tone == EstimatedTone.FRUSTRATED) {
-
-                    "புரியுது. இது கொஞ்சம் எரிச்சலா இருக்கும். கவலைப்படாதீங்க — நாம ஒவ்வொரு step-ஆ பார்த்து சரி பண்ணலாம்."
-
-                } else {
-
-                    toolResult.spokenText.ifBlank {
-                        "அது வேலை செய்யவில்லை. வேறு வழியில் முயற்சி செய்யலாம்."
-                    }
-                }
-            }
-
-            DvexToolStatus.ERROR -> {
-
-                "என் பக்கத்தில் ஒரு சிறிய பிரச்சனை வந்திருக்கிறது. மீண்டும் முயற்சி செய்யலாம்."
-            }
-
-            DvexToolStatus.SUCCESS -> {
-
-                when (intent) {
-
-                    is DvexIntent.WakeGreeting -> {
-
-                        when (tone) {
-
-                            EstimatedTone.URGENT ->
-                                "நான் இங்கே இருக்கிறேன். சொல்லுங்கள்."
-
-                            else ->
-                                "ஹேய், நான் இங்கே இருக்கிறேன். சொல்லுங்கள்."
-                        }
-                    }
-
-                    is DvexIntent.CallContact -> {
-
-                        if (tone == EstimatedTone.URGENT) {
-
-                            "${intent.recipient}-க்கு இப்போதே கால் செய்கிறேன்."
-
-                        } else {
-
-                            toolResult.spokenText.ifBlank {
-                                "சரி. ${intent.recipient}-க்கு கால் செய்கிறேன்."
-                            }
-                        }
-                    }
-
-                    is DvexIntent.SendMessage -> {
-
-                        toolResult.spokenText.ifBlank {
-                            "Done. ${intent.recipient}-க்கு செய்தி அனுப்பியாச்சு."
-                        }
-                    }
-
-                    is DvexIntent.SendEmail -> {
-
-                        toolResult.spokenText.ifBlank {
-                            "${intent.recipient}-க்கு மின்னஞ்சல் அனுப்பியாச்சு."
-                        }
-                    }
-
-                    is DvexIntent.OpenApp -> {
-
-                        if (tone == EstimatedTone.URGENT) {
-
-                            "${intent.appName} இப்போதே திறக்கிறேன்."
-
-                        } else {
-
-                            toolResult.spokenText.ifBlank {
-                                "சரி. ${intent.appName} திறக்கிறேன்."
-                            }
-                        }
-                    }
-
-                    is DvexIntent.GoHome ->
-                        "Home-க்கு போயாச்சு."
-
-                    is DvexIntent.GoBack ->
-                        "பின்னாடி வந்தாச்சு."
-
-                    is DvexIntent.OpenRecents ->
-                        "Recent apps காட்டுகிறேன்."
-
-                    is DvexIntent.OpenNotifications ->
-                        "Notifications திறக்கிறேன்."
-
-                    is DvexIntent.OpenSettings ->
-                        "Settings திறக்கிறேன்."
-
-                    is DvexIntent.OpenWifiSettings ->
-                        "Wi-Fi settings திறக்கிறேன்."
-
-                    is DvexIntent.ToggleFlashlight -> {
-
-                        val result =
-                            toolResult.spokenText.lowercase(Locale.ROOT)
-
-                        if (result.contains("off")) {
-                            "Flashlight off பண்ணியாச்சு."
-                        } else {
-                            "Flashlight on பண்ணியாச்சு."
-                        }
-                    }
-
-                    is DvexIntent.SetAlarm ->
-                        "Alarm set பண்ணியாச்சு."
-
-                    is DvexIntent.SetTimer ->
-                        "Timer start பண்ணியாச்சு."
-
-                    is DvexIntent.AdjustVolume ->
-                        "Volume adjust பண்ணியாச்சு."
-
-                    is DvexIntent.MediaControl ->
-                        "Done."
-
-                    is DvexIntent.GetTime ->
-                        toolResult.spokenText
-
-                    is DvexIntent.GetWeather ->
-                        "வானிலை விவரம்: ${toolResult.spokenText}"
-
-                    is DvexIntent.Calculate ->
-                        toolResult.spokenText
-
-                    is DvexIntent.RememberFact ->
-                        "நினைவில் வைத்துக்கொண்டேன்."
-
-                    is DvexIntent.RecallMemory ->
-                        toolResult.spokenText
-
-                    is DvexIntent.MultiStep ->
-                        toolResult.spokenText
-
-                    is DvexIntent.SearchWeb ->
-                        toolResult.spokenText
-
-                    is DvexIntent.GeneralQuestion ->
-                        toolResult.spokenText
-
-                    is DvexIntent.Conversation -> {
-
-                        generateTamilConversation(
-                            toolResult.spokenText,
-                            tone,
-                            userInput,
-                            context
-                        )
-                    }
-
-                    else ->
-                        toolResult.spokenText.ifBlank {
-                            "சரி. சொல்லுங்கள்."
-                        }
-                }
-            }
-        }
-    }
-
-    private fun generateTamilConversation(
-        existingText: String,
-        tone: EstimatedTone,
-        userInput: String,
-        context: ConversationContext?
-    ): String {
-
-        return when (tone) {
-
-            EstimatedTone.SAD -> {
-
-                when {
-
-                    containsAny(
-                        userInput,
-                        "தனியா",
-                        "தனியாக",
-                        "யாரும் இல்லை"
-                    ) ->
-                        "ஹேய்... நீங்கள் தனியாக இல்லை. நான் இங்கே இருக்கிறேன். என்ன நடந்தது என்று சொல்லுங்கள்."
-
-                    else ->
-                        "ஹேய்... புரிகிறது. என்னிடம் நீங்கள் okay-ஆ இருக்கிற மாதிரி நடிக்க வேண்டியதில்லை. என்ன நடந்தது சொல்லுங்கள்."
-                }
-            }
-
-            EstimatedTone.FRUSTRATED -> {
-
-                "புரிகிறது. இது கொஞ்சம் எரிச்சலாக இருக்கும். கவலைப்படாதீங்க — நாம சேர்ந்து சரி பண்ணலாம். என்ன பிரச்சனை சொல்லுங்கள்."
-            }
-
-            EstimatedTone.CONFUSED -> {
-
-                "பரவாயில்லை. அதை ரொம்ப simple-ஆ பார்ப்போம். எந்த part புரியவில்லை என்று சொல்லுங்கள்."
-            }
-
-            EstimatedTone.EXCITED -> {
-
-                "ஹா ஹா, அந்த energy நல்லா இருக்கு. வாங்க, பண்ணலாம்."
-            }
-
-            EstimatedTone.HAPPY -> {
-
-                "அதை கேட்கவே நல்லா இருக்கு. நீங்கள் happy-ஆ இருக்கிறது எனக்கும் சந்தோஷம்."
-            }
-
-            EstimatedTone.URGENT -> {
-
-                "நான் இங்கே இருக்கிறேன். இப்போது என்ன வேண்டும் சொல்லுங்கள்."
-            }
-
-            EstimatedTone.NEUTRAL -> {
-
-                if (isHelpSeeking(userInput)) {
-
-                    "கண்டிப்பா. என்ன உதவி வேண்டும் சொல்லுங்கள்."
-
-                } else {
-
-                    existingText.ifBlank {
-                        "ம்... சொல்லுங்கள். நான் கேட்கிறேன்."
-                    }
-                }
-            }
-        }
-    }
-
-    // =====================================================================
-    // ACKNOWLEDGEMENT
-    // =====================================================================
-
-    private fun generateAcknowledgement(
+    private fun addNaturalName(
+        response: String,
+        name: String,
         language: DetectedLanguage,
         tone: EstimatedTone
     ): String {
 
         return when (language) {
 
-            DetectedLanguage.ENGLISH -> {
-
+            DetectedLanguage.TAMIL -> {
                 when (tone) {
+                    EstimatedTone.SAD ->
+                        "$name, $response"
 
-                    EstimatedTone.HAPPY ->
-                        "Nice. I'm with you."
-
-                    EstimatedTone.EXCITED ->
-                        "Let's go."
+                    EstimatedTone.FRUSTRATED ->
+                        "$name, $response"
 
                     else ->
-                        "Yeah. I'm with you."
+                        "$name, $response"
                 }
             }
 
             DetectedLanguage.TANGLISH -> {
-
-                when (tone) {
-
-                    EstimatedTone.HAPPY ->
-                        "Nice. Naan un kooda irukken."
-
-                    EstimatedTone.EXCITED ->
-                        "Va, let's go."
-
-                    else ->
-                        "Yeah. Naan irukken."
-                }
+                "$name, $response"
             }
 
-            DetectedLanguage.TAMIL -> {
-
-                when (tone) {
-
-                    EstimatedTone.HAPPY ->
-                        "நல்லா இருக்கு. நான் உங்களோடு இருக்கிறேன்."
-
-                    EstimatedTone.EXCITED ->
-                        "வாங்க, போகலாம்."
-
-                    else ->
-                        "சரி. நான் இருக்கிறேன்."
-                }
+            else -> {
+                "$name, $response"
             }
         }
     }
 
-    // =====================================================================
-    // CLARIFICATION
-    // =====================================================================
+    private fun makeConcise(response: String): String {
 
-    private fun generateClarification(
+        val cleaned = response
+            .replace(Regex("\\s+"), " ")
+            .trim()
+
+        if (cleaned.length <= 140) {
+            return cleaned
+        }
+
+        val sentences = cleaned.split(
+            Regex("(?<=[.!?])\\s+")
+        )
+
+        if (sentences.isNotEmpty()) {
+            return sentences
+                .take(2)
+                .joinToString(" ")
+                .trim()
+        }
+
+        return cleaned.take(160).trim()
+    }
+
+    private fun makeWarm(
+        response: String,
         language: DetectedLanguage,
-        candidateIntent: DvexIntent?
+        tone: EstimatedTone
     ): String {
 
-        val phrase =
-            candidateIntent?.let {
-                describeIntentForClarification(it)
+        // Don't artificially add warmth to factual/tool responses.
+        if (
+            tone == EstimatedTone.URGENT ||
+            tone == EstimatedTone.CONFUSED
+        ) {
+            return response
+        }
+
+        if (
+            response.contains("❤️") ||
+            response.contains("😊") ||
+            response.contains("🙂") ||
+            response.contains("💙")
+        ) {
+            return response
+        }
+
+        if (
+            tone == EstimatedTone.SAD ||
+            tone == EstimatedTone.FRUSTRATED
+        ) {
+            return when (language) {
+
+                DetectedLanguage.TAMIL ->
+                    "$response 💙"
+
+                DetectedLanguage.TANGLISH ->
+                    "$response 💙"
+
+                else ->
+                    "$response 💙"
+            }
+        }
+
+        return response
+    }
+
+    // ============================================================
+    // ENGLISH
+    // ============================================================
+
+    private fun generateEnglishResponse(
+        intent: DvexIntent,
+        toolResult: DvexToolResult,
+        userInput: String,
+        tone: EstimatedTone,
+        context: ConversationContext?
+    ): String {
+
+        if (intent is DvexIntent.LowConfidence) {
+            return generateClarification(userInput)
+        }
+
+        if (isSimpleAcknowledgement(userInput)) {
+            return when (tone) {
+                EstimatedTone.HAPPY,
+                EstimatedTone.EXCITED ->
+                    "Anytime 😊"
+
+                else ->
+                    "Of course."
+            }
+        }
+
+        return when (tone) {
+
+            EstimatedTone.SAD -> {
+                generateSadEnglish(intent)
             }
 
-        return when (language) {
+            EstimatedTone.FRUSTRATED -> {
+                generateFrustratedEnglish(intent)
+            }
 
-            DetectedLanguage.ENGLISH -> {
+            EstimatedTone.CONFUSED -> {
+                generateConfusedEnglish(intent)
+            }
 
-                if (phrase != null) {
+            EstimatedTone.EXCITED -> {
+                generateExcitedEnglish(intent)
+            }
 
-                    "Sorry, I didn't catch that clearly. Did you mean \"$phrase\"?"
+            EstimatedTone.HAPPY -> {
+                generateHappyEnglish(intent)
+            }
 
-                } else {
+            EstimatedTone.URGENT -> {
+                generateUrgentEnglish(
+                    intent,
+                    toolResult
+                )
+            }
 
-                    "Sorry, I didn't catch that clearly. Say it once more?"
+            else -> {
+                generateNeutralEnglish(
+                    intent,
+                    toolResult,
+                    context
+                )
+            }
+        }
+    }
+
+    private fun generateNeutralEnglish(
+        intent: DvexIntent,
+        toolResult: DvexToolResult,
+        context: ConversationContext?
+    ): String {
+
+        if (toolResult.spokenText.isNotBlank()) {
+            return toolResult.spokenText
+        }
+
+        return when (intent) {
+
+            is DvexIntent.Greeting ->
+                "Hey! I'm here. What are we doing?"
+
+            is DvexIntent.Time ->
+                "It's ${toolResult.spokenText}."
+
+            is DvexIntent.GetWeather ->
+                toolResult.spokenText.ifBlank {
+                    "I couldn't get the weather right now."
                 }
-            }
 
-            DetectedLanguage.TANGLISH -> {
+            is DvexIntent.OpenApp ->
+                toolResult.spokenText.ifBlank {
+                    "Done."
 
-                if (phrase != null) {
-
-                    "Sorry, konjam clear-aa kekkala. \"$phrase\"-aa sonninga?"
-
-                } else {
-
-                    "Sorry, konjam clear-aa sollu. Marubadi sollu?"
                 }
-            }
 
-            DetectedLanguage.TAMIL -> {
-
-                if (phrase != null) {
-
-                    "மன்னிக்கவும், தெளிவாக கேட்கவில்லை. \"$phrase\" என்று சொன்னீர்களா?"
-
-                } else {
-
-                    "மன்னிக்கவும், தெளிவாக கேட்கவில்லை. இன்னொரு முறை சொல்லுங்கள்?"
+            is DvexIntent.CloseApp ->
+                toolResult.spokenText.ifBlank {
+                    "Done."
                 }
+
+            is DvexIntent.SearchWeb ->
+                toolResult.spokenText.ifBlank {
+                    "I've got it."
+                }
+
+            is DvexIntent.PlayMusic ->
+                toolResult.spokenText.ifBlank {
+                    "Sure, playing it."
+                }
+
+            is DvexIntent.SendMessage ->
+                toolResult.spokenText.ifBlank {
+                    "Message handled."
+                }
+
+            is DvexIntent.MakeCall ->
+                toolResult.spokenText.ifBlank {
+                    "Call handled."
+                }
+
+            is DvexIntent.DeviceControl ->
+                toolResult.spokenText.ifBlank {
+                    "Done."
+                }
+
+            is DvexIntent.Reminder ->
+                toolResult.spokenText.ifBlank {
+                    "Reminder set."
+                }
+
+            is DvexIntent.Conversation ->
+                "I'm right here."
+
+            else ->
+                toolResult.spokenText.ifBlank {
+                    "Done."
+                }
+        }
+    }
+
+    private fun generateSadEnglish(
+        intent: DvexIntent
+    ): String {
+
+        if (intent !is DvexIntent.Conversation) {
+            return "I'm with you. Let's handle this one step at a time."
+        }
+
+        return listOf(
+            "Hey... it's okay. You don't have to handle everything at once. I'm here with you.",
+            "I got you. Take a breath first. We'll figure it out together.",
+            "It's okay to have a rough moment. You can talk to me about it.",
+            "Hey, don't carry everything alone. I'm right here."
+        ).random()
+    }
+
+    private fun generateFrustratedEnglish(
+        intent: DvexIntent
+    ): String {
+
+        if (intent !is DvexIntent.Conversation) {
+            return "Yeah, I get why that's frustrating. Let's fix it."
+        }
+
+        return listOf(
+            "Yeah, I get you. That sounds frustrating. Let's sort it out.",
+            "I hear you. Don't worry, we'll break it down and fix it.",
+            "Okay, okay. Let's not fight the problem. We'll solve it step by step."
+        ).random()
+    }
+
+    private fun generateConfusedEnglish(
+        intent: DvexIntent
+    ): String {
+
+        return when (intent) {
+
+            is DvexIntent.Conversation ->
+                "No worries. Tell me which part is confusing and I'll explain it simply."
+
+            else ->
+                "Got you. I can explain that more simply."
+        }
+    }
+
+    private fun generateExcitedEnglish(
+        intent: DvexIntent
+    ): String {
+
+        return when (intent) {
+
+            is DvexIntent.Conversation ->
+                "Haha, I like that energy 😄 What happened?"
+
+            else ->
+                "Nice! Let's go 😄"
+        }
+    }
+
+    private fun generateHappyEnglish(
+        intent: DvexIntent
+    ): String {
+
+        return when (intent) {
+
+            is DvexIntent.Conversation ->
+                "That's nice 😊 I'm glad to hear that."
+
+            else ->
+                "Nice 😊 Done."
+        }
+    }
+
+    private fun generateUrgentEnglish(
+        intent: DvexIntent,
+        toolResult: DvexToolResult
+    ): String {
+
+        if (toolResult.spokenText.isNotBlank()) {
+            return toolResult.spokenText
+        }
+
+        return when (intent) {
+            is DvexIntent.Conversation ->
+                "I'm here. Tell me what you need right now."
+
+            else ->
+                "Got it. Handling it now."
+        }
+    }
+
+    // ============================================================
+    // TANGLISH
+    // ============================================================
+
+    private fun generateTanglishResponse(
+        intent: DvexIntent,
+        toolResult: DvexToolResult,
+        userInput: String,
+        tone: EstimatedTone,
+        context: ConversationContext?
+    ): String {
+
+        if (intent is DvexIntent.LowConfidence) {
+            return "Konjam clear-ah sollu, naan correct-ah understand panni help panren."
+        }
+
+        if (isSimpleAcknowledgement(userInput)) {
+            return when (tone) {
+                EstimatedTone.HAPPY,
+                EstimatedTone.EXCITED ->
+                    "Anytime da 😊"
+
+                else ->
+                    "Sure da."
             }
+        }
+
+        if (toolResult.spokenText.isNotBlank()) {
+
+            val toolText = toolResult.spokenText.trim()
+
+            if (
+                intent !is DvexIntent.Conversation &&
+                toolText.length > 2
+            ) {
+                return toolText
+            }
+        }
+
+        return when (tone) {
+
+            EstimatedTone.SAD -> {
+                listOf(
+                    "Hey... parava illa da. Ellamey orae time-la solve panna vendam. Naan iruken.",
+                    "Sari da... first konjam calm aagu. En kitta pesu, together handle pannalam.",
+                    "Nee thaniya carry panna vendam da. Naan inga iruken."
+                ).random()
+            }
+
+            EstimatedTone.FRUSTRATED -> {
+                listOf(
+                    "Puriyudhu da, semma frustrating-ah irukkum. Va, step by step fix pannalam.",
+                    "Okay da, tension aagadha. Problem-a break panni solve pannalam.",
+                    "Aama, kadupa irukkum. Namma idha kandippa sort pannalam."
+                ).random()
+            }
+
+            EstimatedTone.CONFUSED -> {
+                "Parava illa da. Enna part puriyala nu sollu, romba simple-ah explain panren."
+            }
+
+            EstimatedTone.EXCITED -> {
+                "Haha semma energy da 😄 Sollu, enna matter?"
+            }
+
+            EstimatedTone.HAPPY -> {
+                "Nice da 😊 Unakku happy-ah irukku nu kekkave nalla irukku."
+            }
+
+            EstimatedTone.URGENT -> {
+                "Okay da, got it. Ippo enna venum nu straight-ah sollu."
+            }
+
+            else -> {
+                generateNeutralTanglish(
+                    intent,
+                    toolResult,
+                    context
+                )
+            }
+        }
+    }
+
+    private fun generateNeutralTanglish(
+        intent: DvexIntent,
+        toolResult: DvexToolResult,
+        context: ConversationContext?
+    ): String {
+
+        if (toolResult.spokenText.isNotBlank()) {
+            return toolResult.spokenText
+        }
+
+        return when (intent) {
+
+            is DvexIntent.Greeting ->
+                "Hey da 😄 Sollu, enna panlam?"
+
+            is DvexIntent.OpenApp ->
+                "Sure da, open panren."
+
+            is DvexIntent.CloseApp ->
+                "Done da."
+
+            is DvexIntent.SearchWeb ->
+                "Sure da, search panren."
+
+            is DvexIntent.PlayMusic ->
+                "Sure da, play panren."
+
+            is DvexIntent.SendMessage ->
+                "Okay da, message handle panren."
+
+            is DvexIntent.MakeCall ->
+                "Sure da, call handle panren."
+
+            is DvexIntent.DeviceControl ->
+                "Done da."
+
+            is DvexIntent.Reminder ->
+                "Okay da, reminder set panren."
+
+            is DvexIntent.GetWeather ->
+                "Weather check panren da."
+
+            is DvexIntent.Time ->
+                toolResult.spokenText.ifBlank {
+                    "Ippo time check panren da."
+                }
+
+            is DvexIntent.Conversation ->
+                "Hmm, sollu da. Naan kekkuren."
+
+            else ->
+                "Done da."
+        }
+    }
+
+    // ============================================================
+    // TAMIL
+    // ============================================================
+
+    private fun generateTamilResponse(
+        intent: DvexIntent,
+        toolResult: DvexToolResult,
+        userInput: String,
+        tone: EstimatedTone,
+        context: ConversationContext?
+    ): String {
+
+        if (intent is DvexIntent.LowConfidence) {
+            return "கொஞ்சம் தெளிவாக சொல்லுங்க, சரியாக புரிந்து கொண்டு உதவுறேன்."
+        }
+
+        if (isSimpleAcknowledgement(userInput)) {
+            return "எப்போதும் இருக்கேன் 😊"
+        }
+
+        if (toolResult.spokenText.isNotBlank()) {
+            return toolResult.spokenText
+        }
+
+        return when (tone) {
+
+            EstimatedTone.SAD -> {
+                listOf(
+                    "பரவாயில்லை... எல்லாத்தையும் ஒரே நேரத்தில் சமாளிக்க வேண்டியதில்லை. நான் இருக்கேன்.",
+                    "கொஞ்சம் அமைதியாக இருங்க. என்ன நடந்தது என்று என்னிடம் சொல்லலாம்.",
+                    "நீங்க இதை தனியாக சமாளிக்க வேண்டியதில்லை. நான் உங்களுடன் இருக்கேன்."
+                ).random()
+            }
+
+            EstimatedTone.FRUSTRATED -> {
+                listOf(
+                    "புரிகிறது. அது எரிச்சலாகத்தான் இருக்கும். வாங்க, ஒவ்வொன்றாக சரி பண்ணலாம்.",
+                    "கவலைப்படாதீங்க. பிரச்சனையை சின்ன சின்ன பகுதிகளாக பிரித்து சரி பண்ணலாம்.",
+                    "சரி, முதலில் அமைதியாக இருப்போம். அடுத்து என்ன செய்யலாம் என்று பார்க்கலாம்."
+                ).random()
+            }
+
+            EstimatedTone.CONFUSED -> {
+                "பரவாயில்லை. எந்த பகுதி புரியவில்லை என்று சொல்லுங்க, எளிமையாக விளக்குறேன்."
+            }
+
+            EstimatedTone.EXCITED -> {
+                "ஹாஹா 😄 அந்த energy நல்லா இருக்கு! என்ன விஷயம்?"
+            }
+
+            EstimatedTone.HAPPY -> {
+                "அருமை 😊 நீங்கள் சந்தோஷமாக இருக்கிறீங்கன்னு கேட்கவே நல்லா இருக்கு."
+            }
+
+            EstimatedTone.URGENT -> {
+                "சரி. இப்போ உங்களுக்கு என்ன தேவைன்னு நேராக சொல்லுங்க."
+            }
+
+            else -> {
+                generateNeutralTamil(
+                    intent,
+                    toolResult,
+                    context
+                )
+            }
+        }
+    }
+
+    private fun generateNeutralTamil(
+        intent: DvexIntent,
+        toolResult: DvexToolResult,
+        context: ConversationContext?
+    ): String {
+
+        if (toolResult.spokenText.isNotBlank()) {
+            return toolResult.spokenText
+        }
+
+        return when (intent) {
+
+            is DvexIntent.Greeting ->
+                "வணக்கம் 😊 சொல்லுங்க, என்ன செய்யலாம்?"
+
+            is DvexIntent.OpenApp ->
+                "சரி, திறக்கிறேன்."
+
+            is DvexIntent.CloseApp ->
+                "சரி, முடிந்தது."
+
+            is DvexIntent.SearchWeb ->
+                "சரி, தேடுகிறேன்."
+
+            is DvexIntent.PlayMusic ->
+                "சரி, பாடலை இயக்குகிறேன்."
+
+            is DvexIntent.SendMessage ->
+                "சரி, மெசேஜை அனுப்புகிறேன்."
+
+            is DvexIntent.MakeCall ->
+                "சரி, அழைப்பை செய்கிறேன்."
+
+            is DvexIntent.DeviceControl ->
+                "சரி, முடிந்தது."
+
+            is DvexIntent.Reminder ->
+                "சரி, நினைவூட்டலை அமைக்கிறேன்."
+
+            is DvexIntent.GetWeather ->
+                "வானிலை தகவலை பார்க்கிறேன்."
+
+            is DvexIntent.Time ->
+                toolResult.spokenText.ifBlank {
+                    "நேரத்தை பார்க்கிறேன்."
+                }
+
+            is DvexIntent.Conversation ->
+                "சொல்லுங்க, நான் கேட்கிறேன்."
+
+            else ->
+                "சரி, முடிந்தது."
+        }
+    }
+
+    // ============================================================
+    // HELPERS
+    // ============================================================
+
+    private fun isRepeatRequest(input: String): Boolean {
+
+        val text = input
+            .lowercase(Locale.getDefault())
+            .trim()
+
+        val phrases = listOf(
+            "repeat",
+            "say again",
+            "again",
+            "what did you say",
+            "once more",
+            "thirumba sollu",
+            "thirumba sollunga",
+            "marubadi sollu",
+            "marubadi sollunga",
+            "திரும்ப சொல்லு",
+            "மறுபடியும் சொல்லு"
+        )
+
+        return containsAny(text, phrases)
+    }
+
+    private fun isSimpleAcknowledgement(input: String): Boolean {
+
+        val text = input
+            .lowercase(Locale.getDefault())
+            .trim()
+
+        val phrases = listOf(
+            "thanks",
+            "thank you",
+            "thankyou",
+            "ok",
+            "okay",
+            "cool",
+            "nice",
+            "great",
+            "good",
+            "super",
+            "nandri",
+            "seri",
+            "sari",
+            "correct",
+            "semma",
+            "சரி",
+            "நன்றி",
+            "அருமை"
+        )
+
+        return phrases.any {
+            text == it || text.contains(it)
+        }
+    }
+
+    private fun isGreeting(input: String): Boolean {
+
+        val text = input
+            .lowercase(Locale.getDefault())
+            .trim()
+
+        val greetings = listOf(
+            "hi",
+            "hello",
+            "hey",
+            "hey dvex",
+            "hi dvex",
+            "hello dvex",
+            "good morning",
+            "good afternoon",
+            "good evening",
+            "vanakkam",
+            "வணக்கம்"
+        )
+
+        return greetings.any {
+            text == it || text.startsWith("$it ")
+        }
+    }
+
+    private fun containsName(
+        response: String,
+        name: String
+    ): Boolean {
+
+        return response
+            .lowercase(Locale.getDefault())
+            .contains(
+                name.lowercase(Locale.getDefault())
+            )
+    }
+
+    private fun containsAny(
+        text: String,
+        words: List<String>
+    ): Boolean {
+
+        return words.any { word ->
+            text.contains(word)
+        }
+    }
+
+    private fun generateClarification(
+        userInput: String
+    ): String {
+
+        if (userInput.isBlank()) {
+            return "Sorry, I didn't catch that. Say it again?"
+        }
+
+        return when {
+            userInput.length < 5 ->
+                "I didn't quite catch that. Can you say a little more?"
+
+            else ->
+                "I got part of that, but I'm not fully sure. Can you rephrase it?"
         }
     }
 
     private fun describeIntentForClarification(
         intent: DvexIntent
-    ): String? {
+    ): String {
 
         return when (intent) {
 
             is DvexIntent.OpenApp ->
-                "open ${intent.appName}"
+                "opening an app"
 
-            is DvexIntent.CallContact ->
-                "call ${intent.recipient}"
-
-            is DvexIntent.SendMessage ->
-                "message ${intent.recipient}"
-
-            is DvexIntent.SendEmail ->
-                "email ${intent.recipient}"
+            is DvexIntent.CloseApp ->
+                "closing an app"
 
             is DvexIntent.SearchWeb ->
-                "search for ${intent.query}"
+                "searching the web"
+
+            is DvexIntent.PlayMusic ->
+                "playing music"
+
+            is DvexIntent.SendMessage ->
+                "sending a message"
+
+            is DvexIntent.MakeCall ->
+                "making a call"
 
             is DvexIntent.GetWeather ->
-                "check the weather"
+                "checking the weather"
 
-            is DvexIntent.GetTime ->
-                "check the time"
+            is DvexIntent.Reminder ->
+                "setting a reminder"
 
-            is DvexIntent.Calculate ->
-                "calculate ${intent.expression}"
-
-            is DvexIntent.SetAlarm ->
-                "set an alarm"
-
-            is DvexIntent.SetTimer ->
-                "set a timer"
-
-            is DvexIntent.ToggleFlashlight ->
-                "toggle the flashlight"
+            is DvexIntent.DeviceControl ->
+                "controlling the device"
 
             else ->
-                null
+                "doing that"
         }
-    }
-
-    // =====================================================================
-    // Helpers
-    // =====================================================================
-
-    private fun normalize(value: String): String {
-
-        return value
-            .lowercase(Locale.ROOT)
-            .trim()
-            .replace(Regex("\\s+"), " ")
-    }
-
-    private fun containsAny(
-        text: String,
-        vararg values: String
-    ): Boolean {
-
-        return values.any {
-            text.contains(it.lowercase(Locale.ROOT))
-        }
-    }
-
-    private fun isRepeatRequest(
-        input: String
-    ): Boolean {
-
-        return input == "repeat" ||
-            input == "repeat that" ||
-            input == "say again" ||
-            input == "say that again" ||
-            input == "what did you say" ||
-            input == "enna sonna" ||
-            input == "enna sonneenga" ||
-            input == "marubadiyum sollu" ||
-            input == "marupadiyum sollu" ||
-            input == "திரும்ப சொல்லு"
-    }
-
-    private fun isSimpleAcknowledgement(
-        input: String
-    ): Boolean {
-
-        return input == "ok" ||
-            input == "okay" ||
-            input == "seri" ||
-            input == "sari" ||
-            input == "super" ||
-            input == "nice" ||
-            input == "thanks" ||
-            input == "thank you" ||
-            input == "nandri" ||
-            input == "got it" ||
-            input == "correct" ||
-            input == "right"
-    }
-
-    private fun isHelpSeeking(
-        input: String
-    ): Boolean {
-
-        if (input.length > 60) {
-            return false
-        }
-
-        return input == "help" ||
-            input == "help me" ||
-            input.contains("need help") ||
-            input.contains("help venum") ||
-            input.contains("oru help") ||
-            input.contains("udhavi venum") ||
-            input.contains("உதவி வேணும்") ||
-            input.contains("உதவி வேண்டும்") ||
-            input.contains("உதவி செய்யுங்கள்")
-    }
-
-    companion object {
-
-        private const val TAG =
-            "[D-VEX][RESPONSE]"
     }
 }
