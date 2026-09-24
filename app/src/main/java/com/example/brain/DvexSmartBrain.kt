@@ -21,9 +21,9 @@ import java.util.Locale
  * - Natural response generation
  * - ASR confidence
  */
-class DvexSmartBrain(
-    context: Context
-) {
+class DvexSmartBrain
+    context: (Context)
+ {
 
     companion object {
         private const val TAG = "DvexSmartBrain"
