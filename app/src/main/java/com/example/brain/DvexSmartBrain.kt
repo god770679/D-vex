@@ -31,6 +31,7 @@ class DvexSmartBrain(
 
   private val intentDetector = IntentDetector()
   private val conversationContext = ConversationContext()
+private val memoryStore = DvexMemoryStore(context)
   private val toolRouter = DvexToolRouter(context, appLauncher, deviceControl)
   private val responseGenerator = DvexResponseGenerator()
   private val contactResolver = ContactResolver(context)
