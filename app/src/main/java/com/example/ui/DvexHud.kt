@@ -19,10 +19,13 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.CutCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material3.Icon
@@ -48,9 +51,12 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.model.AiCoreState
 import com.example.model.DvexUiState
+import com.example.model.NavItem
 import com.example.model.VoiceState
 import com.example.ui.components.CameraVisionPanel
 import com.example.ui.components.DvexAiCore
+import com.example.ui.components.DvexLeftSidebar
+import com.example.ui.components.DvexRightSidebar
 import com.example.ui.components.LocationPanel
 import com.example.ui.components.MemoryCorePanel
 import com.example.ui.components.MicrophoneButton
@@ -74,24 +80,22 @@ import com.example.ui.theme.DvexTextPrimary
 import com.example.ui.theme.DvexTextSecondary
 
 /**
- * ============================================================
- * D-VEX TACTICAL HUD
- * ============================================================
+ * Main D-VEX Tactical HUD.
  *
- * Layout 1:
+ * Layout:
  *
- * ------------------------------------------------------------
  * HEADER
- * ------------------------------------------------------------
- * STATUS | WEATHER | AI VISION | D-VEX CORE | QUICK ACTIONS
- * ------------------------------------------------------------
- * VOICE | COMMAND INPUT | MICROPHONE
- * ------------------------------------------------------------
- * D-VEX RESPONSE
- * ------------------------------------------------------------
+ * STATUS
+ * WEATHER
+ * AI VISION
+ * D-VEX AI CORE
+ * QUICK ACTIONS
+ * SYSTEM DATA
+ * VOICE + INPUT
+ * RESPONSE
  *
- * Existing D-VEX core visuals are preserved.
- * No AI core colors/glow/animation are changed here.
+ * Existing components and functionality are preserved.
+ * DvexAiCore visual design is not modified here.
  */
 @Composable
 fun DvexHud(
@@ -122,6 +126,7 @@ fun DvexHud(
         val isWidescreen = maxWidth >= 840.dp
 
         if (isWidescreen) {
+
             WidescreenTacticalHud(
                 uiState = uiState,
                 onUiStateChange = onUiStateChange,
@@ -140,7 +145,9 @@ fun DvexHud(
                 onDeviceControl = onDeviceControl,
                 onToggleVision = onToggleVision
             )
+
         } else {
+
             CompactMobileTacticalHud(
                 uiState = uiState,
                 onUiStateChange = onUiStateChange,
@@ -165,7 +172,7 @@ fun DvexHud(
 
 
 /* ============================================================
- * WIDESCREEN HUD
+ * WIDESCREEN / TABLET
  * ============================================================ */
 
 @Composable
@@ -207,7 +214,7 @@ private fun WidescreenTacticalHud(
 
 
         /* ====================================================
-         * MAIN HORIZONTAL HUD
+         * MAIN BODY
          * ==================================================== */
 
         Row(
@@ -221,24 +228,79 @@ private fun WidescreenTacticalHud(
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
 
+            /* =================================================
+             * LEFT SIDEBAR
+             * ================================================= */
+
+            DvexLeftSidebar(
+                selectedItem = uiState.selectedNavigation,
+                onItemSelected = { nav ->
+
+                    if (nav == NavItem.SETTINGS) {
+                        onOpenSettingsRequested?.invoke()
+                    }
+
+                    onUiStateChange(
+                        uiState.copy(
+                            selectedNavigation = nav
+                        )
+                    )
+                }
+            )
+
 
             /* =================================================
-             * LEFT SIDE
-             * WEATHER + VISION
+             * CENTER CONTENT
              * ================================================= */
 
             Column(
                 modifier = Modifier
-                    .weight(0.95f)
-                    .fillMaxHeight(),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
+                    .weight(1f)
+                    .fillMaxHeight()
+                    .verticalScroll(
+                        rememberScrollState()
+                    ),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
 
-                /* WEATHER */
+                /* =================================================
+                 * STATUS
+                 * ================================================= */
+
+                HudSectionCard(
+                    title = "SYSTEM STATUS",
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+
+                        SystemStatusPanel(
+                            vitals = uiState.systemStatus,
+                            modifier = Modifier.weight(1f)
+                        )
+
+                        TimePanel(
+                            modifier = Modifier.weight(1f)
+                        )
+
+                        LocationPanel(
+                            location = uiState.location,
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+                }
+
+
+                /* =================================================
+                 * WEATHER
+                 * ================================================= */
 
                 HudSectionCard(
                     title = "WEATHER",
-                    modifier = Modifier.weight(0.8f)
+                    modifier = Modifier.fillMaxWidth()
                 ) {
 
                     WeatherPanel(
@@ -248,11 +310,13 @@ private fun WidescreenTacticalHud(
                 }
 
 
-                /* AI VISION */
+                /* =================================================
+                 * AI VISION
+                 * ================================================= */
 
                 HudSectionCard(
                     title = "AI VISION",
-                    modifier = Modifier.weight(1.2f)
+                    modifier = Modifier.fillMaxWidth()
                 ) {
 
                     CameraVisionPanel(
@@ -265,90 +329,49 @@ private fun WidescreenTacticalHud(
                     )
 
                     Text(
-                        text =
-                            if (isVisionActive)
-                                "VISION ACTIVE"
-                            else
-                                "VISION STANDBY",
+                        text = if (isVisionActive) {
+                            "VISION ACTIVE"
+                        } else {
+                            "VISION STANDBY"
+                        },
                         modifier = Modifier.fillMaxWidth(),
                         fontFamily = FontFamily.Monospace,
-                        fontSize = 9.sp,
+                        fontSize = 10.sp,
                         fontWeight = FontWeight.Bold,
-                        letterSpacing = 1.sp,
-                        color =
-                            if (isVisionActive)
-                                DvexNeonRedBright
-                            else
-                                DvexTextMuted
+                        color = if (isVisionActive) {
+                            DvexNeonRedBright
+                        } else {
+                            DvexTextMuted
+                        }
                     )
                 }
-            }
 
 
-            /* =================================================
-             * CENTER
-             * SYSTEM + D-VEX CORE
-             * ================================================= */
-
-            Column(
-                modifier = Modifier
-                    .weight(1.45f)
-                    .fillMaxHeight(),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-
-                /* SYSTEM STATUS */
-
-                HudSectionCard(
-                    title = "SYSTEM ONLINE",
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement =
-                            Arrangement.spacedBy(6.dp)
-                    ) {
-
-                        SystemStatusPanel(
-                            vitals = uiState.systemStatus,
-                            modifier = Modifier.weight(1f)
-                        )
-
-                        TimePanel(
-                            modifier = Modifier.weight(1f)
-                        )
-                    }
-                }
-
-
-                /* D-VEX CORE */
+                /* =================================================
+                 * D-VEX AI CORE
+                 * ================================================= */
 
                 HudSectionCard(
                     title = "D-VEX AI CORE",
-                    modifier = Modifier
-                        .weight(1f)
-                        .fillMaxWidth()
+                    modifier = Modifier.fillMaxWidth()
                 ) {
 
                     Box(
                         modifier = Modifier
-                            .fillMaxSize()
-                            .padding(4.dp),
+                            .fillMaxWidth()
+                            .height(390.dp),
                         contentAlignment = Alignment.Center
                     ) {
 
                         /*
-                         * DO NOT MODIFY:
+                         * IMPORTANT:
                          *
-                         * DvexAiCore already contains the
-                         * reactor ring, colors, glow,
-                         * animations and core visual design.
+                         * Existing DvexAiCore is reused directly.
+                         * No reactor colors/glow/animation are changed.
                          */
 
                         DvexAiCore(
                             aiState = uiState.aiState,
-
                             onStateChangeRequest = { newState ->
 
                                 if (onCenterCoreTapped != null) {
@@ -384,26 +407,19 @@ private fun WidescreenTacticalHud(
                         )
                     }
                 }
-            }
 
 
-            /* =================================================
-             * RIGHT SIDE
-             * QUICK ACTIONS + ACTIVITY
-             * ================================================= */
-
-            Column(
-                modifier = Modifier
-                    .weight(0.95f)
-                    .fillMaxHeight(),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-
-                /* QUICK ACTIONS */
+                /* =================================================
+                 * QUICK ACTIONS
+                 * ================================================= */
 
                 HudSectionCard(
-                    title = "QUICK ACTIONS",
-                    modifier = Modifier.weight(1f)
+                    title = if (isPowerMode) {
+                        "POWER QUICK ACTIONS"
+                    } else {
+                        "QUICK ACTIONS"
+                    },
+                    modifier = Modifier.fillMaxWidth()
                 ) {
 
                     if (isPowerMode) {
@@ -414,16 +430,13 @@ private fun WidescreenTacticalHud(
                             isVisionActive = isVisionActive,
                             onToggleOrb = onToggleOrb,
                             onRecentApp = onRecentApp,
-                            onNotificationAlert =
-                                onNotificationAlert,
-                            onDeviceControl =
-                                onDeviceControl,
-                            onToggleVision =
-                                onToggleVision
+                            onNotificationAlert = onNotificationAlert,
+                            onDeviceControl = onDeviceControl,
+                            onToggleVision = onToggleVision
                         )
 
                         Spacer(
-                            modifier = Modifier.height(6.dp)
+                            modifier = Modifier.height(8.dp)
                         )
                     }
 
@@ -441,7 +454,7 @@ private fun WidescreenTacticalHud(
                                 ?: onUiStateChange(
                                     uiState.copy(
                                         responseText =
-                                            "Quick access: $action triggered.",
+                                            "Quick access initiated for $action. Standby.",
                                         aiState =
                                             AiCoreState.PROCESSING
                                     )
@@ -451,47 +464,57 @@ private fun WidescreenTacticalHud(
                 }
 
 
-                /* ACTIVITY */
+                /* =================================================
+                 * MEMORY / RECENT / NOTIFICATIONS
+                 * ================================================= */
 
-                HudSectionCard(
-                    title = "ACTIVITY",
-                    modifier = Modifier.weight(1f)
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
 
                     MemoryCorePanel(
                         percentage = uiState.memoryPercentage,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-
-                    Spacer(
-                        modifier = Modifier.height(5.dp)
+                        modifier = Modifier.weight(1f)
                     )
 
                     RecentActivityPanel(
-                        activities =
-                            uiState.recentActivities,
-                        modifier =
-                            Modifier.fillMaxWidth()
-                    )
-
-                    Spacer(
-                        modifier = Modifier.height(5.dp)
+                        activities = uiState.recentActivities,
+                        modifier = Modifier.weight(1f)
                     )
 
                     NotificationPanel(
-                        notifications =
-                            uiState.notifications,
-                        modifier =
-                            Modifier.fillMaxWidth()
+                        notifications = uiState.notifications,
+                        modifier = Modifier.weight(1f)
                     )
                 }
             }
+
+
+            /* =================================================
+             * RIGHT SIDEBAR
+             * ================================================= */
+
+            DvexRightSidebar(
+                selectedItem = uiState.selectedNavigation,
+                onItemSelected = { nav ->
+
+                    if (nav == NavItem.SETTINGS) {
+                        onOpenSettingsRequested?.invoke()
+                    }
+
+                    onUiStateChange(
+                        uiState.copy(
+                            selectedNavigation = nav
+                        )
+                    )
+                }
+            )
         }
 
 
         /* ====================================================
-         * BOTTOM
-         * VOICE + COMMAND + RESPONSE
+         * VOICE + INPUT + RESPONSE
          * ==================================================== */
 
         DesktopBottomControls(
@@ -505,10 +528,7 @@ private fun WidescreenTacticalHud(
 
 
 /* ============================================================
- * MOBILE / COMPACT HUD
- *
- * Still horizontal Layout 1.
- * Designed for landscape / compact HUD usage.
+ * MOBILE
  * ============================================================ */
 
 @Composable
@@ -537,7 +557,9 @@ private fun CompactMobileTacticalHud(
             .windowInsetsPadding(WindowInsets.navigationBars)
     ) {
 
-        /* HEADER */
+        /* ====================================================
+         * HEADER
+         * ==================================================== */
 
         DvexTopBar(
             uiState = uiState,
@@ -548,221 +570,260 @@ private fun CompactMobileTacticalHud(
 
 
         /* ====================================================
-         * HORIZONTAL BODY
+         * SCROLLABLE HUD
          * ==================================================== */
 
-        Row(
+        Column(
             modifier = Modifier
                 .weight(1f)
                 .fillMaxWidth()
-                .padding(6.dp),
-            horizontalArrangement =
-                Arrangement.spacedBy(6.dp)
+                .verticalScroll(
+                    rememberScrollState()
+                )
+                .padding(
+                    horizontal = 8.dp,
+                    vertical = 8.dp
+                ),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
 
+            /* =================================================
+             * STATUS
+             * ================================================= */
 
-            /* LEFT */
-
-            Column(
-                modifier = Modifier
-                    .weight(1f)
-                    .fillMaxHeight(),
-                verticalArrangement =
-                    Arrangement.spacedBy(6.dp)
+            HudSectionCard(
+                title = "SYSTEM STATUS",
+                modifier = Modifier.fillMaxWidth()
             ) {
 
-                HudSectionCard(
-                    title = "WEATHER",
-                    modifier = Modifier.weight(0.8f)
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
 
-                    WeatherPanel(
-                        weather = uiState.weather,
+                    SystemStatusPanel(
+                        vitals = uiState.systemStatus,
                         modifier = Modifier.fillMaxWidth()
                     )
-                }
 
+                    TimePanel(
+                        modifier = Modifier.fillMaxWidth()
+                    )
 
-                HudSectionCard(
-                    title = "AI VISION",
-                    modifier = Modifier.weight(1.2f)
-                ) {
-
-                    CameraVisionPanel(
-                        isVisionActive = isVisionActive,
+                    LocationPanel(
+                        location = uiState.location,
                         modifier = Modifier.fillMaxWidth()
                     )
                 }
             }
 
 
-            /* CENTER */
+            /* =================================================
+             * WEATHER
+             * ================================================= */
 
-            Column(
-                modifier = Modifier
-                    .weight(1.35f)
-                    .fillMaxHeight(),
-                verticalArrangement =
-                    Arrangement.spacedBy(6.dp)
+            HudSectionCard(
+                title = "WEATHER",
+                modifier = Modifier.fillMaxWidth()
             ) {
 
-                HudSectionCard(
-                    title = "SYSTEM ONLINE",
+                WeatherPanel(
+                    weather = uiState.weather,
                     modifier = Modifier.fillMaxWidth()
-                ) {
-
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement =
-                            Arrangement.spacedBy(4.dp)
-                    ) {
-
-                        SystemStatusPanel(
-                            vitals = uiState.systemStatus,
-                            modifier = Modifier.weight(1f)
-                        )
-
-                        TimePanel(
-                            modifier = Modifier.weight(1f)
-                        )
-                    }
-                }
-
-
-                HudSectionCard(
-                    title = "D-VEX AI CORE",
-                    modifier = Modifier
-                        .weight(1f)
-                        .fillMaxWidth()
-                ) {
-
-                    Box(
-                        modifier = Modifier.fillMaxSize(),
-                        contentAlignment =
-                            Alignment.Center
-                    ) {
-
-                        DvexAiCore(
-                            aiState = uiState.aiState,
-
-                            onStateChangeRequest = { newState ->
-
-                                if (onCenterCoreTapped != null) {
-
-                                    onCenterCoreTapped()
-
-                                } else {
-
-                                    val newVoiceState =
-                                        when (newState) {
-
-                                            AiCoreState.LISTENING ->
-                                                VoiceState.LISTENING
-
-                                            AiCoreState.PROCESSING ->
-                                                VoiceState.PROCESSING
-
-                                            AiCoreState.RESPONDING ->
-                                                VoiceState.SPEAKING
-
-                                            else ->
-                                                VoiceState.IDLE
-                                        }
-
-                                    onUiStateChange(
-                                        uiState.copy(
-                                            aiState = newState,
-                                            voiceState = newVoiceState
-                                        )
-                                    )
-                                }
-                            }
-                        )
-                    }
-                }
+                )
             }
 
 
-            /* RIGHT */
+            /* =================================================
+             * AI VISION
+             * ================================================= */
 
-            Column(
-                modifier = Modifier
-                    .weight(1f)
-                    .fillMaxHeight(),
-                verticalArrangement =
-                    Arrangement.spacedBy(6.dp)
+            HudSectionCard(
+                title = "AI VISION",
+                modifier = Modifier.fillMaxWidth()
             ) {
 
-                HudSectionCard(
-                    title = "QUICK ACTIONS",
-                    modifier = Modifier.weight(1f)
+                CameraVisionPanel(
+                    isVisionActive = isVisionActive,
+                    modifier = Modifier.fillMaxWidth()
+                )
+
+                Spacer(
+                    modifier = Modifier.height(6.dp)
+                )
+
+                Text(
+                    text = if (isVisionActive) {
+                        "VISION ACTIVE"
+                    } else {
+                        "VISION STANDBY"
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = 10.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = if (isVisionActive) {
+                        DvexNeonRedBright
+                    } else {
+                        DvexTextMuted
+                    }
+                )
+            }
+
+
+            /* =================================================
+             * D-VEX AI CORE
+             * ================================================= */
+
+            HudSectionCard(
+                title = "D-VEX AI CORE",
+                modifier = Modifier.fillMaxWidth()
+            ) {
+
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(330.dp),
+                    contentAlignment = Alignment.Center
                 ) {
 
-                    if (isPowerMode) {
+                    /*
+                     * Existing reactor/core component.
+                     * Visual theme remains unchanged.
+                     */
 
-                        PowerModeButtonCluster(
-                            isPowerMode = true,
-                            isOrbActive = isOrbActive,
-                            isVisionActive = isVisionActive,
-                            onToggleOrb = onToggleOrb,
-                            onRecentApp = onRecentApp,
-                            onNotificationAlert =
-                                onNotificationAlert,
-                            onDeviceControl =
-                                onDeviceControl,
-                            onToggleVision =
-                                onToggleVision
-                        )
+                    DvexAiCore(
+                        aiState = uiState.aiState,
+                        onStateChangeRequest = { newState ->
 
-                        Spacer(
-                            modifier = Modifier.height(4.dp)
-                        )
-                    }
+                            if (onCenterCoreTapped != null) {
 
-                    QuickAccessPanel(
-                        onActionSelected = { action ->
+                                onCenterCoreTapped()
 
-                            if (
-                                action == "Settings" ||
-                                action == "More"
-                            ) {
-                                onOpenSettingsRequested?.invoke()
+                            } else {
+
+                                val newVoiceState =
+                                    when (newState) {
+
+                                        AiCoreState.LISTENING ->
+                                            VoiceState.LISTENING
+
+                                        AiCoreState.PROCESSING ->
+                                            VoiceState.PROCESSING
+
+                                        AiCoreState.RESPONDING ->
+                                            VoiceState.SPEAKING
+
+                                        else ->
+                                            VoiceState.IDLE
+                                    }
+
+                                onUiStateChange(
+                                    uiState.copy(
+                                        aiState = newState,
+                                        voiceState = newVoiceState
+                                    )
+                                )
                             }
-
-                            onQuickActionSelected?.invoke(action)
                         }
                     )
                 }
+            }
 
 
-                HudSectionCard(
-                    title = "ACTIVITY",
-                    modifier = Modifier.weight(1f)
-                ) {
+            /* =================================================
+             * QUICK ACTIONS
+             * ================================================= */
 
-                    RecentActivityPanel(
-                        activities =
-                            uiState.recentActivities,
-                        modifier =
-                            Modifier.fillMaxWidth()
+            HudSectionCard(
+                title = if (isPowerMode) {
+                    "POWER QUICK ACTIONS"
+                } else {
+                    "QUICK ACTIONS"
+                },
+                modifier = Modifier.fillMaxWidth()
+            ) {
+
+                if (isPowerMode) {
+
+                    PowerModeButtonCluster(
+                        isPowerMode = true,
+                        isOrbActive = isOrbActive,
+                        isVisionActive = isVisionActive,
+                        onToggleOrb = onToggleOrb,
+                        onRecentApp = onRecentApp,
+                        onNotificationAlert = onNotificationAlert,
+                        onDeviceControl = onDeviceControl,
+                        onToggleVision = onToggleVision
                     )
 
                     Spacer(
-                        modifier = Modifier.height(4.dp)
-                    )
-
-                    NotificationPanel(
-                        notifications =
-                            uiState.notifications,
-                        modifier =
-                            Modifier.fillMaxWidth()
+                        modifier = Modifier.height(10.dp)
                     )
                 }
+
+                QuickAccessPanel(
+                    onActionSelected = { action ->
+
+                        if (
+                            action == "Settings" ||
+                            action == "More"
+                        ) {
+                            onOpenSettingsRequested?.invoke()
+                        }
+
+                        onQuickActionSelected?.invoke(action)
+                            ?: onUiStateChange(
+                                uiState.copy(
+                                    responseText =
+                                        "Quick access: $action triggered in HUD.",
+                                    aiState =
+                                        AiCoreState.PROCESSING
+                                )
+                            )
+                    }
+                )
+            }
+
+
+            /* =================================================
+             * SYSTEM DATA
+             * ================================================= */
+
+            HudSectionCard(
+                title = "SYSTEM DATA",
+                modifier = Modifier.fillMaxWidth()
+            ) {
+
+                MemoryCorePanel(
+                    percentage = uiState.memoryPercentage,
+                    modifier = Modifier.fillMaxWidth()
+                )
+
+                Spacer(
+                    modifier = Modifier.height(8.dp)
+                )
+
+                RecentActivityPanel(
+                    activities = uiState.recentActivities,
+                    modifier = Modifier.fillMaxWidth()
+                )
+
+                Spacer(
+                    modifier = Modifier.height(8.dp)
+                )
+
+                NotificationPanel(
+                    notifications = uiState.notifications,
+                    modifier = Modifier.fillMaxWidth()
+                )
             }
         }
 
 
-        /* BOTTOM */
+        /* ====================================================
+         * BOTTOM CONTROLS
+         * ==================================================== */
 
         MobileBottomControls(
             uiState = uiState,
@@ -775,7 +836,7 @@ private fun CompactMobileTacticalHud(
 
 
 /* ============================================================
- * COMMON SECTION CARD
+ * HUD SECTION CARD
  * ============================================================ */
 
 @Composable
@@ -797,15 +858,12 @@ private fun HudSectionCard(
                 shape = CutCornerShape(6.dp)
             )
             .padding(10.dp),
-
-        verticalArrangement =
-            Arrangement.spacedBy(6.dp)
+        verticalArrangement = Arrangement.spacedBy(6.dp)
     ) {
 
         Row(
             modifier = Modifier.fillMaxWidth(),
-            verticalAlignment =
-                Alignment.CenterVertically
+            verticalAlignment = Alignment.CenterVertically
         ) {
 
             Box(
@@ -833,6 +891,182 @@ private fun HudSectionCard(
         }
 
         content()
+    }
+}
+
+
+/* ============================================================
+ * D-VEX TOP BAR
+ *
+ * This fixes:
+ * Unresolved reference: DvexTopBar
+ * ============================================================ */
+
+@Composable
+private fun DvexTopBar(
+    uiState: DvexUiState,
+    isCompact: Boolean,
+    isPowerMode: Boolean,
+    onTogglePowerMode: () -> Unit
+) {
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(DvexSurfaceDark)
+            .border(
+                width = 1.dp,
+                color = DvexBorderMuted,
+                shape = CutCornerShape(
+                    bottomStart = 8.dp,
+                    bottomEnd = 8.dp
+                )
+            )
+            .padding(
+                horizontal = if (isCompact) {
+                    10.dp
+                } else {
+                    14.dp
+                },
+                vertical = if (isCompact) {
+                    8.dp
+                } else {
+                    10.dp
+                }
+            ),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+
+        /* =================================================
+         * D-VEX TITLE
+         * ================================================= */
+
+        Column(
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(2.dp)
+        ) {
+
+            Text(
+                text = "D-VEX",
+                fontFamily = FontFamily.Monospace,
+                fontSize = if (isCompact) {
+                    18.sp
+                } else {
+                    22.sp
+                },
+                fontWeight = FontWeight.Bold,
+                letterSpacing = 2.sp,
+                color = DvexNeonRedBright
+            )
+
+            Text(
+                text = "AI ASSISTANT",
+                fontFamily = FontFamily.Monospace,
+                fontSize = if (isCompact) {
+                    8.sp
+                } else {
+                    9.sp
+                },
+                fontWeight = FontWeight.Bold,
+                letterSpacing = 1.5.sp,
+                color = DvexTextSecondary
+            )
+        }
+
+
+        /* =================================================
+         * SYSTEM ONLINE
+         * ================================================= */
+
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(5.dp)
+        ) {
+
+            Box(
+                modifier = Modifier
+                    .size(7.dp)
+                    .background(
+                        color = DvexNeonRedBright,
+                        shape = CircleShape
+                    )
+            )
+
+            if (!isCompact) {
+
+                Text(
+                    text = "SYSTEM ONLINE",
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = 9.sp,
+                    fontWeight = FontWeight.Bold,
+                    letterSpacing = 1.sp,
+                    color = DvexTextSecondary
+                )
+            }
+        }
+
+
+        /* =================================================
+         * POWER / STANDARD MODE
+         * ================================================= */
+
+        Box(
+            modifier = Modifier
+                .clip(
+                    CutCornerShape(4.dp)
+                )
+                .background(
+                    color = if (isPowerMode) {
+                        DvexNeonRed
+                    } else {
+                        DvexSurfaceCard
+                    }
+                )
+                .border(
+                    width = 1.dp,
+                    color = if (isPowerMode) {
+                        DvexNeonRedBright
+                    } else {
+                        DvexBorderMuted
+                    },
+                    shape = CutCornerShape(4.dp)
+                )
+                .clickable {
+                    onTogglePowerMode()
+                }
+                .padding(
+                    horizontal = if (isCompact) {
+                        8.dp
+                    } else {
+                        10.dp
+                    },
+                    vertical = 6.dp
+                ),
+            contentAlignment = Alignment.Center
+        ) {
+
+            Text(
+                text = if (isPowerMode) {
+                    "POWER"
+                } else {
+                    "STANDARD"
+                },
+                fontFamily = FontFamily.Monospace,
+                fontSize = if (isCompact) {
+                    8.sp
+                } else {
+                    9.sp
+                },
+                fontWeight = FontWeight.Bold,
+                letterSpacing = 1.sp,
+                color = if (isPowerMode) {
+                    Color.White
+                } else {
+                    DvexTextPrimary
+                }
+            )
+        }
     }
 }
 
@@ -867,7 +1101,9 @@ private fun DesktopBottomControls(
             )
     ) {
 
-        /* RESPONSE */
+        /* =================================================
+         * RESPONSE
+         * ================================================= */
 
         ResponsePanel(
             responseText = uiState.responseText,
@@ -879,7 +1115,9 @@ private fun DesktopBottomControls(
         )
 
 
-        /* COMMAND */
+        /* =================================================
+         * COMMAND INPUT
+         * ================================================= */
 
         TacticalCommandInput(
             onSendCommand = { command ->
@@ -893,14 +1131,14 @@ private fun DesktopBottomControls(
         )
 
 
-        /* VOICE + MIC */
+        /* =================================================
+         * VOICE + MIC
+         * ================================================= */
 
         Row(
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement =
-                Arrangement.spacedBy(10.dp),
-            verticalAlignment =
-                Alignment.CenterVertically
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            verticalAlignment = Alignment.CenterVertically
         ) {
 
             VoiceModule(
@@ -914,11 +1152,9 @@ private fun DesktopBottomControls(
                         VoiceState.LISTENING,
 
                 onClick = {
-
                     handleMicrophoneTap(
                         uiState = uiState,
-                        onUiStateChange =
-                            onUiStateChange,
+                        onUiStateChange = onUiStateChange,
                         onMicrophoneTapped =
                             onMicrophoneTapped
                     )
@@ -959,6 +1195,10 @@ private fun MobileBottomControls(
             )
     ) {
 
+        /* =================================================
+         * RESPONSE
+         * ================================================= */
+
         ResponsePanel(
             responseText = uiState.responseText,
             modifier = Modifier.fillMaxWidth()
@@ -967,6 +1207,11 @@ private fun MobileBottomControls(
         Spacer(
             modifier = Modifier.height(6.dp)
         )
+
+
+        /* =================================================
+         * COMMAND INPUT
+         * ================================================= */
 
         TacticalCommandInput(
             onSendCommand = { command ->
@@ -979,12 +1224,15 @@ private fun MobileBottomControls(
             modifier = Modifier.height(6.dp)
         )
 
+
+        /* =================================================
+         * VOICE
+         * ================================================= */
+
         Row(
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement =
-                Arrangement.spacedBy(10.dp),
-            verticalAlignment =
-                Alignment.CenterVertically
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            verticalAlignment = Alignment.CenterVertically
         ) {
 
             VoiceModule(
@@ -998,11 +1246,9 @@ private fun MobileBottomControls(
                         VoiceState.LISTENING,
 
                 onClick = {
-
                     handleMicrophoneTap(
                         uiState = uiState,
-                        onUiStateChange =
-                            onUiStateChange,
+                        onUiStateChange = onUiStateChange,
                         onMicrophoneTapped =
                             onMicrophoneTapped
                     )
@@ -1031,7 +1277,7 @@ private fun handleMicrophoneTap(
     val nextVoiceState =
         if (
             uiState.voiceState ==
-                VoiceState.LISTENING
+            VoiceState.LISTENING
         ) {
             VoiceState.IDLE
         } else {
@@ -1041,7 +1287,7 @@ private fun handleMicrophoneTap(
     val nextAiState =
         if (
             nextVoiceState ==
-                VoiceState.LISTENING
+            VoiceState.LISTENING
         ) {
             AiCoreState.LISTENING
         } else {
@@ -1055,7 +1301,7 @@ private fun handleMicrophoneTap(
             responseText =
                 if (
                     nextVoiceState ==
-                        VoiceState.LISTENING
+                    VoiceState.LISTENING
                 ) {
                     "Listening for command..."
                 } else {
@@ -1101,10 +1347,13 @@ fun TacticalCommandInput(
                 horizontal = 8.dp,
                 vertical = 4.dp
             ),
-
         verticalAlignment =
             Alignment.CenterVertically
     ) {
+
+        /* =================================================
+         * TEXT FIELD
+         * ================================================= */
 
         BasicTextField(
             value = commandText,
@@ -1131,7 +1380,9 @@ fun TacticalCommandInput(
             ),
 
             cursorBrush =
-                SolidColor(DvexNeonRedBright),
+                SolidColor(
+                    DvexNeonRedBright
+                ),
 
             singleLine = true,
 
@@ -1162,7 +1413,9 @@ fun TacticalCommandInput(
                             focusManager
                                 .clearFocus()
 
-                            onSendCommand(command)
+                            onSendCommand(
+                                command
+                            )
                         }
                     }
                 ),
@@ -1201,9 +1454,12 @@ fun TacticalCommandInput(
         )
 
 
+        /* =================================================
+         * SEND BUTTON
+         * ================================================= */
+
         val isSendEnabled =
             commandText.isNotBlank()
-
 
         Box(
             modifier = Modifier
@@ -1211,18 +1467,20 @@ fun TacticalCommandInput(
                     CutCornerShape(3.dp)
                 )
                 .background(
-                    if (isSendEnabled)
+                    if (isSendEnabled) {
                         DvexNeonRed
-                    else
+                    } else {
                         DvexSurfaceCard
+                    }
                 )
                 .border(
                     width = 1.dp,
                     color =
-                        if (isSendEnabled)
+                        if (isSendEnabled) {
                             DvexNeonRedBright
-                        else
-                            DvexBorderMuted,
+                        } else {
+                            DvexBorderMuted
+                        },
                     shape =
                         CutCornerShape(3.dp)
                 )
@@ -1245,14 +1503,15 @@ fun TacticalCommandInput(
                         focusManager
                             .clearFocus()
 
-                        onSendCommand(command)
+                        onSendCommand(
+                            command
+                        )
                     }
                 }
                 .padding(
                     horizontal = 10.dp,
                     vertical = 6.dp
                 ),
-
             contentAlignment =
                 Alignment.Center
         ) {
@@ -1270,10 +1529,11 @@ fun TacticalCommandInput(
                         "Send tactical command",
 
                     tint =
-                        if (isSendEnabled)
+                        if (isSendEnabled) {
                             Color.White
-                        else
-                            DvexTextMuted,
+                        } else {
+                            DvexTextMuted
+                        },
 
                     modifier =
                         Modifier.size(13.dp)
@@ -1292,10 +1552,11 @@ fun TacticalCommandInput(
                         FontWeight.Bold,
                     letterSpacing = 1.sp,
                     color =
-                        if (isSendEnabled)
+                        if (isSendEnabled) {
                             Color.White
-                        else
+                        } else {
                             DvexTextMuted
+                        }
                 )
             }
         }
