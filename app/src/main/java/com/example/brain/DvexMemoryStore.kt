@@ -1,162 +1,386 @@
 package com.example.brain
 
 import android.content.Context
-import org.json.JSONArray
-import org.json.JSONObject
+import android.util.Log
 
-/**
- * Persistent memory for D-VEX.
- *
- * Stores only information that is useful across app launches.
- *
- * Short-term conversation -> ConversationContext
- * Long-term user memory  -> DvexMemoryStore
- */
 class DvexMemoryStore(
     context: Context
 ) {
 
-    private val prefs = context.applicationContext.getSharedPreferences(
-        PREFS_NAME,
-        Context.MODE_PRIVATE
-    )
+    companion object {
+        private const val TAG = "DvexMemoryStore"
+        private const val PREF_NAME = "dvex_memory"
 
-    /**
-     * Explicit user facts.
-     *
-     * Example:
-     * "My name is Alex"
-     * "Remember that I prefer short answers"
-     */
-    fun rememberFact(fact: String) {
+        const val KEY_PREFERRED_NAME = "preferred_name"
+        const val KEY_REPLY_STYLE = "reply_style"
+        const val KEY_PERSONALITY = "personality"
+        const val KEY_LANGUAGE_PREFERENCE = "language_preference"
 
-        val clean = fact.trim()
-
-        if (clean.isBlank()) return
-
-        val facts = getFacts().toMutableList()
-
-        // Avoid exact duplicates.
-        if (!facts.any { it.equals(clean, ignoreCase = true) }) {
-            facts.add(clean)
-        }
-
-        saveFacts(facts.takeLast(MAX_FACTS))
+        const val KEY_USER_PREFERENCE = "user_preference"
+        const val KEY_USER_LIKES = "user_likes"
+        const val KEY_USER_DISLIKES = "user_dislikes"
     }
 
-    fun getFacts(): List<String> {
-        val raw = prefs.getString(KEY_FACTS, null)
-            ?: return emptyList()
+    private val preferences =
+        context.applicationContext.getSharedPreferences(
+            PREF_NAME,
+            Context.MODE_PRIVATE
+        )
+
+    // ============================================================
+    // SAVE
+    // ============================================================
+
+    fun save(
+        key: String,
+        value: String
+    ) {
+
+        if (key.isBlank()) {
+            return
+        }
+
+        if (value.isBlank()) {
+            return
+        }
+
+        try {
+
+            preferences.edit()
+                .putString(
+                    key,
+                    value.trim()
+                )
+                .apply()
+
+            Log.d(
+                TAG,
+                "Memory saved: $key"
+            )
+
+        } catch (e: Exception) {
+
+            Log.e(
+                TAG,
+                "Failed to save memory: $key",
+                e
+            )
+        }
+    }
+
+    // ============================================================
+    // READ
+    // ============================================================
+
+    fun get(
+        key: String
+    ): String? {
+
+        if (key.isBlank()) {
+            return null
+        }
 
         return try {
 
-            val json = JSONArray(raw)
+            preferences
+                .getString(key, null)
+                ?.trim()
+                ?.takeIf {
+                    it.isNotBlank()
+                }
 
-            buildList {
+        } catch (e: Exception) {
 
-                for (i in 0 until json.length()) {
-                    val value = json.optString(i)
+            Log.e(
+                TAG,
+                "Failed to read memory: $key",
+                e
+            )
 
-                    if (value.isNotBlank()) {
-                        add(value)
+            null
+        }
+    }
+
+    // ============================================================
+    // CHECK
+    // ============================================================
+
+    fun contains(
+        key: String
+    ): Boolean {
+
+        return try {
+
+            preferences.contains(key)
+
+        } catch (e: Exception) {
+
+            false
+        }
+    }
+
+    // ============================================================
+    // REMOVE ONE MEMORY
+    // ============================================================
+
+    fun remove(
+        key: String
+    ) {
+
+        if (key.isBlank()) {
+            return
+        }
+
+        try {
+
+            preferences.edit()
+                .remove(key)
+                .apply()
+
+            Log.d(
+                TAG,
+                "Memory removed: $key"
+            )
+
+        } catch (e: Exception) {
+
+            Log.e(
+                TAG,
+                "Failed to remove memory: $key",
+                e
+            )
+        }
+    }
+
+    // ============================================================
+    // CLEAR ALL
+    // ============================================================
+
+    fun clearAll() {
+
+        try {
+
+            preferences.edit()
+                .clear()
+                .apply()
+
+            Log.d(
+                TAG,
+                "All persistent memory cleared"
+            )
+
+        } catch (e: Exception) {
+
+            Log.e(
+                TAG,
+                "Failed to clear all memory",
+                e
+            )
+        }
+    }
+
+    // ============================================================
+    // PREFERRED NAME
+    // ============================================================
+
+    fun savePreferredName(
+        name: String
+    ) {
+
+        save(
+            KEY_PREFERRED_NAME,
+            name
+        )
+    }
+
+    fun getPreferredName(): String? {
+
+        return get(
+            KEY_PREFERRED_NAME
+        )
+    }
+
+    // ============================================================
+    // REPLY STYLE
+    // ============================================================
+
+    fun saveReplyStyle(
+        style: String
+    ) {
+
+        save(
+            KEY_REPLY_STYLE,
+            style
+        )
+    }
+
+    fun getReplyStyle(): String? {
+
+        return get(
+            KEY_REPLY_STYLE
+        )
+    }
+
+    // ============================================================
+    // PERSONALITY
+    // ============================================================
+
+    fun savePersonality(
+        personality: String
+    ) {
+
+        save(
+            KEY_PERSONALITY,
+            personality
+        )
+    }
+
+    fun getPersonality(): String? {
+
+        return get(
+            KEY_PERSONALITY
+        )
+    }
+
+    // ============================================================
+    // LANGUAGE PREFERENCE
+    // ============================================================
+
+    fun saveLanguagePreference(
+        language: String
+    ) {
+
+        save(
+            KEY_LANGUAGE_PREFERENCE,
+            language
+        )
+    }
+
+    fun getLanguagePreference(): String? {
+
+        return get(
+            KEY_LANGUAGE_PREFERENCE
+        )
+    }
+
+    // ============================================================
+    // GENERAL USER PREFERENCE
+    // ============================================================
+
+    fun saveUserPreference(
+        preference: String
+    ) {
+
+        save(
+            KEY_USER_PREFERENCE,
+            preference
+        )
+    }
+
+    fun getUserPreference(): String? {
+
+        return get(
+            KEY_USER_PREFERENCE
+        )
+    }
+
+    // ============================================================
+    // LIKES
+    // ============================================================
+
+    fun saveUserLikes(
+        likes: String
+    ) {
+
+        save(
+            KEY_USER_LIKES,
+            likes
+        )
+    }
+
+    fun getUserLikes(): String? {
+
+        return get(
+            KEY_USER_LIKES
+        )
+    }
+
+    // ============================================================
+    // DISLIKES
+    // ============================================================
+
+    fun saveUserDislikes(
+        dislikes: String
+    ) {
+
+        save(
+            KEY_USER_DISLIKES,
+            dislikes
+        )
+    }
+
+    fun getUserDislikes(): String? {
+
+        return get(
+            KEY_USER_DISLIKES
+        )
+    }
+
+    // ============================================================
+    // MEMORY SNAPSHOT
+    // ============================================================
+
+    fun getAllMemory(): Map<String, String> {
+
+        return try {
+
+            preferences
+                .all
+                .mapNotNull { entry ->
+
+                    val key = entry.key
+                    val value = entry.value
+
+                    if (
+                        value is String &&
+                        value.isNotBlank()
+                    ) {
+                        key to value
+                    } else {
+                        null
                     }
                 }
-            }
+                .toMap()
 
-        } catch (_: Exception) {
-            emptyList()
+        } catch (e: Exception) {
+
+            Log.e(
+                TAG,
+                "Failed to read all memory",
+                e
+            )
+
+            emptyMap()
         }
     }
 
-    fun clearFacts() {
-        prefs.edit()
-            .remove(KEY_FACTS)
-            .apply()
-    }
+    // ============================================================
+    // MEMORY SUMMARY
+    // ============================================================
 
-    /**
-     * Save the user's preferred response style.
-     */
-    fun setPreferredStyle(style: SpeakingStyle) {
+    fun getMemorySummary(): String {
 
-        prefs.edit()
-            .putString(KEY_STYLE, style.name)
-            .apply()
-    }
+        val memory =
+            getAllMemory()
 
-    fun getPreferredStyle(): SpeakingStyle {
-
-        val value = prefs.getString(
-            KEY_STYLE,
-            SpeakingStyle.UNKNOWN.name
-        ) ?: SpeakingStyle.UNKNOWN.name
-
-        return try {
-            SpeakingStyle.valueOf(value)
-        } catch (_: Exception) {
-            SpeakingStyle.UNKNOWN
-        }
-    }
-
-    /**
-     * Optional user name.
-     */
-    fun setUserName(name: String) {
-
-        val clean = name.trim()
-
-        if (clean.isBlank()) return
-
-        prefs.edit()
-            .putString(KEY_USER_NAME, clean)
-            .apply()
-    }
-
-    fun getUserName(): String? {
-        return prefs.getString(KEY_USER_NAME, null)
-    }
-
-    /**
-     * Stores a lightweight memory summary.
-     *
-     * This is useful for future contextual personalization.
-     */
-    fun setConversationSummary(summary: String) {
-
-        if (summary.isBlank()) return
-
-        prefs.edit()
-            .putString(KEY_SUMMARY, summary.take(MAX_SUMMARY_LENGTH))
-            .apply()
-    }
-
-    fun getConversationSummary(): String? {
-        return prefs.getString(KEY_SUMMARY, null)
-    }
-
-    private fun saveFacts(facts: List<String>) {
-
-        val json = JSONArray()
-
-        facts.forEach {
-            json.put(it)
+        if (memory.isEmpty()) {
+            return "No saved memory."
         }
 
-        prefs.edit()
-            .putString(KEY_FACTS, json.toString())
-            .apply()
-    }
-
-    companion object {
-
-        private const val PREFS_NAME = "dvex_long_term_memory"
-
-        private const val KEY_FACTS = "facts"
-        private const val KEY_STYLE = "preferred_style"
-        private const val KEY_USER_NAME = "user_name"
-        private const val KEY_SUMMARY = "conversation_summary"
-
-        private const val MAX_FACTS = 50
-        private const val MAX_SUMMARY_LENGTH = 2000
+        return memory.entries.joinToString(
+            separator = "\n"
+        ) {
+            "${it.key}: ${it.value}"
+        }
     }
 }
