@@ -61,7 +61,7 @@ data class ContextTurn(
  * DvexMemoryStore.
  */
 class ConversationContext(
-    private val maxHistorySize: Int = 12
+    private val maxHistorySize: Int = 20
 ) {
 
     private val history = LinkedList<ContextTurn>()
