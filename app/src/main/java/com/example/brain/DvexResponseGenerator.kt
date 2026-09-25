@@ -527,10 +527,10 @@ class DvexResponseGenerator {
 
         return when (intent) {
 
-            is DvexIntent.Greeting ->
+            is DvexIntent.WakeGreeting ->
                 "Hey! I'm here. What are we doing?"
 
-            is DvexIntent.Time ->
+            is DvexIntent.GetTime ->
                 "It's ${toolResult.spokenText}."
 
             is DvexIntent.GetWeather ->
@@ -554,7 +554,7 @@ class DvexResponseGenerator {
                     "I've got it."
                 }
 
-            is DvexIntent.PlayMusic ->
+            is DvexIntent.MediaControl ->
                 toolResult.spokenText.ifBlank {
                     "Sure, playing it."
                 }
@@ -564,17 +564,19 @@ class DvexResponseGenerator {
                     "Message handled."
                 }
 
-            is DvexIntent.MakeCall ->
+            is DvexIntent.CallContact ->
                 toolResult.spokenText.ifBlank {
                     "Call handled."
                 }
 
-            is DvexIntent.DeviceControl ->
+            DvexIntent.GoHome, DvexIntent.GoBack, DvexIntent.OpenRecents,
+            DvexIntent.OpenNotifications, DvexIntent.OpenSettings,
+            DvexIntent.OpenWifiSettings, DvexIntent.LockScreen ->
                 toolResult.spokenText.ifBlank {
                     "Done."
                 }
 
-            is DvexIntent.Reminder ->
+            is DvexIntent.SetAlarm, is DvexIntent.SetTimer ->
                 toolResult.spokenText.ifBlank {
                     "Reminder set."
                 }
@@ -775,7 +777,7 @@ class DvexResponseGenerator {
 
         return when (intent) {
 
-            is DvexIntent.Greeting ->
+            is DvexIntent.WakeGreeting ->
                 "Hey da 😄 Sollu, enna panlam?"
 
             is DvexIntent.OpenApp ->
@@ -787,25 +789,27 @@ class DvexResponseGenerator {
             is DvexIntent.SearchWeb ->
                 "Sure da, search panren."
 
-            is DvexIntent.PlayMusic ->
+            is DvexIntent.MediaControl ->
                 "Sure da, play panren."
 
             is DvexIntent.SendMessage ->
                 "Okay da, message handle panren."
 
-            is DvexIntent.MakeCall ->
+            is DvexIntent.CallContact ->
                 "Sure da, call handle panren."
 
-            is DvexIntent.DeviceControl ->
+            DvexIntent.GoHome, DvexIntent.GoBack, DvexIntent.OpenRecents,
+            DvexIntent.OpenNotifications, DvexIntent.OpenSettings,
+            DvexIntent.OpenWifiSettings, DvexIntent.LockScreen ->
                 "Done da."
 
-            is DvexIntent.Reminder ->
+            is DvexIntent.SetAlarm, is DvexIntent.SetTimer ->
                 "Okay da, reminder set panren."
 
             is DvexIntent.GetWeather ->
                 "Weather check panren da."
 
-            is DvexIntent.Time ->
+            is DvexIntent.GetTime ->
                 toolResult.spokenText.ifBlank {
                     "Ippo time check panren da."
                 }
@@ -898,7 +902,7 @@ class DvexResponseGenerator {
 
         return when (intent) {
 
-            is DvexIntent.Greeting ->
+            is DvexIntent.WakeGreeting ->
                 "வணக்கம் 😊 சொல்லுங்க, என்ன செய்யலாம்?"
 
             is DvexIntent.OpenApp ->
@@ -910,25 +914,27 @@ class DvexResponseGenerator {
             is DvexIntent.SearchWeb ->
                 "சரி, தேடுகிறேன்."
 
-            is DvexIntent.PlayMusic ->
+            is DvexIntent.MediaControl ->
                 "சரி, பாடலை இயக்குகிறேன்."
 
             is DvexIntent.SendMessage ->
                 "சரி, மெசேஜை அனுப்புகிறேன்."
 
-            is DvexIntent.MakeCall ->
+            is DvexIntent.CallContact ->
                 "சரி, அழைப்பை செய்கிறேன்."
 
-            is DvexIntent.DeviceControl ->
+            DvexIntent.GoHome, DvexIntent.GoBack, DvexIntent.OpenRecents,
+            DvexIntent.OpenNotifications, DvexIntent.OpenSettings,
+            DvexIntent.OpenWifiSettings, DvexIntent.LockScreen ->
                 "சரி, முடிந்தது."
 
-            is DvexIntent.Reminder ->
+            is DvexIntent.SetAlarm, is DvexIntent.SetTimer ->
                 "சரி, நினைவூட்டலை அமைக்கிறேன்."
 
             is DvexIntent.GetWeather ->
                 "வானிலை தகவலை பார்க்கிறேன்."
 
-            is DvexIntent.Time ->
+            is DvexIntent.GetTime ->
                 toolResult.spokenText.ifBlank {
                     "நேரத்தை பார்க்கிறேன்."
                 }
@@ -1079,22 +1085,24 @@ class DvexResponseGenerator {
             is DvexIntent.SearchWeb ->
                 "searching the web"
 
-            is DvexIntent.PlayMusic ->
+            is DvexIntent.MediaControl ->
                 "playing music"
 
             is DvexIntent.SendMessage ->
                 "sending a message"
 
-            is DvexIntent.MakeCall ->
+            is DvexIntent.CallContact ->
                 "making a call"
 
             is DvexIntent.GetWeather ->
                 "checking the weather"
 
-            is DvexIntent.Reminder ->
+            is DvexIntent.SetAlarm, is DvexIntent.SetTimer ->
                 "setting a reminder"
 
-            is DvexIntent.DeviceControl ->
+            DvexIntent.GoHome, DvexIntent.GoBack, DvexIntent.OpenRecents,
+            DvexIntent.OpenNotifications, DvexIntent.OpenSettings,
+            DvexIntent.OpenWifiSettings, DvexIntent.LockScreen ->
                 "controlling the device"
 
             else ->
