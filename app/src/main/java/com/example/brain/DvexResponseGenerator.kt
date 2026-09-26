@@ -29,8 +29,8 @@ import kotlinx.coroutines.withTimeout
  * 5. NO TOOL-LOGIC CHANGES: intent classification and DvexToolRouter behavior
  *    are untouched — intent decides WHAT happens; only HOW D-VEX words it.
  *
- * Personality: calm, smart, concise, confident, warm and natural,
- * mirroring the user's own language — Tamil script, Tanglish, English, or mixed.
+ * Personality: calm, smart, warm, natural, concise when appropriate, and conversational,
+ * mirroring the user's own language — Tamil script, Tanglish, English, or a natural mix.
  */
 class DvexResponseGenerator(
   private val aiEngine: AiEngine? = null
@@ -157,9 +157,9 @@ class DvexResponseGenerator(
       val lastSaid = context.lastSpokenResponse
       if (!lastSaid.isNullOrBlank()) {
         return when (language) {
-          DetectedLanguage.TAMIL -> "கடைசியாக நான் சொன்னது: $lastSaid"
-          DetectedLanguage.TANGLISH -> "Kadasila sonnathu: $lastSaid"
-          DetectedLanguage.ENGLISH -> "I said: $lastSaid"
+          DetectedLanguage.TAMIL -> "கடைசியாக நான் சொன்னது, Sir: $lastSaid"
+          DetectedLanguage.TANGLISH -> "Kadasila sonnathu, Sir: $lastSaid"
+          DetectedLanguage.ENGLISH -> "I said, Sir: $lastSaid"
         }
       }
     }
@@ -225,19 +225,18 @@ class DvexResponseGenerator(
         "Write the reply the assistant should say out loud next.\n\n"
     )
     sb.append("STRICT RULES:\n")
-    sb.append("- Reply naturally and conversationally. Usually 1-3 short sentences; use more only when the user clearly needs an explanation. No lists, no markdown, no emojis unless the user explicitly asks.\n")
+    sb.append("- Reply naturally and conversationally. Usually use 1-3 short sentences; use a little more detail only when the user needs it. No lists, no markdown, no emojis unless the user clearly uses that style.\n")
     sb.append(
-      "- Mirror the user's language, script, and natural style (Tamil script, Tanglish, English, or a mix). " +
-        "Do NOT force titles such as Sir/Madam. Use them only if the user naturally uses them.\n"
+      "- Mirror the user's own language, script, and style EXACTLY as they used it " +
+        "(Tamil script, Tanglish romanized Tamil, English, or a natural mix). " +
+        "Address the user respectfully as \"Sir\".\n"
     )
     sb.append(
       "- Use ONLY the facts given below. NEVER invent or change numbers, times, " +
         "weather values, names, or outcomes. If the action failed or was not " +
         "found, say so plainly without sugarcoating it into a success.\n"
     )
-    sb.append("- Sound like a warm, smart human assistant, not a scripted bot. Avoid canned openings, repeated phrases, robotic acknowledgements, and unnecessary restatement of the command.\n")
-    sb.append("- If the user is casually talking rather than requesting an action, respond conversationally and naturally; do not force an action-completion style reply.\n")
-    sb.append("- Keep continuity with the previous reply and the current conversation. Do not repeat the same wording unless repetition is explicitly requested.\n\n")
+    sb.append("- Sound like a warm, smart human assistant, not a scripted bot.\n\n")
 
     sb.append("WHAT JUST HAPPENED: ${describeAction(intent, toolResult)}\n")
     sb.append("RESULT: ${toolResult.status.name} — ${toolResult.message}\n")
@@ -336,11 +335,11 @@ class DvexResponseGenerator(
     val candidatePhrase = candidateIntent?.let { describeIntentForClarification(it) }
     return when (language) {
       DetectedLanguage.TAMIL ->
-        if (candidatePhrase != null) "மன்னிக்கவும், தெளிவா கேட்கல. \"$candidatePhrase\" சொன்னீங்களா?"
-        else "மன்னிக்கவும், கொஞ்சம் தெளிவா சொல்லுங்க."
+        if (candidatePhrase != null) "மன்னிக்கவும், தெளிவா இல்லை. \"$candidatePhrase\" சொன்னீங்களா?"
+        else "மன்னிக்கவும், கொஞ்சம் தெளிவா சொல்லுங்க?"
       DetectedLanguage.TANGLISH ->
-        if (candidatePhrase != null) "Sorry, konjam clear-a kekkala. \"$candidatePhrase\" nu sonneengala?"
-        else "Sorry, konjam clear-a sollunga."
+        if (candidatePhrase != null) "Sorry, konjam clear-a illa. \"$candidatePhrase\" nu nenachena sollunga?"
+        else "Sorry, konjam clear-a sollunga?"
       DetectedLanguage.ENGLISH ->
         if (candidatePhrase != null) "Sorry, I didn't quite catch that. Did you mean \"$candidatePhrase\"?"
         else "Sorry, I didn't quite catch that. Could you say it again?"
