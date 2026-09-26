@@ -8,276 +8,478 @@ import com.example.control.DeviceControlRepository
 import java.util.Locale
 
 data class BrainExecutionResult(
-  val intent: DvexIntent,
-  val toolResult: DvexToolResult,
-  val spokenText: String,
-  val displayText: String = spokenText,
-  val language: DetectedLanguage = DetectedLanguage.ENGLISH,
-  val toolName: String = toolResult.toolName,
-  val isSensitiveAction: Boolean = toolResult.requiresConfirmation,
-  val pendingActionId: String? = toolResult.pendingActionId
+    val intent: DvexIntent,
+    val toolResult: DvexToolResult,
+    val spokenText: String,
+    val displayText: String = spokenText,
+    val language: DetectedLanguage = DetectedLanguage.ENGLISH,
+    val toolName: String = toolResult.toolName,
+    val isSensitiveAction: Boolean = toolResult.requiresConfirmation,
+    val pendingActionId: String? = toolResult.pendingActionId
 )
 
 /**
  * D-VEX Smart Brain V1.
- * Central cognitive unit converting natural user speech into intent understanding,
- * tool selection, execution, verification, and natural speech synthesis response.
+ *
+ * Central cognitive unit converting natural user speech into:
+ * intent understanding,
+ * tool selection,
+ * tool execution,
+ * verification,
+ * and natural-language response generation.
  */
 class DvexSmartBrain(
-  private val context: Context,
-  private val appLauncher: AppLauncherRepository,
-  private val deviceControl: DeviceControlRepository
+    private val context: Context,
+    private val appLauncher: AppLauncherRepository,
+    private val deviceControl: DeviceControlRepository
 ) {
 
-  private val intentDetector = IntentDetector()
-  private val conversationContext = ConversationContext()
-  private val toolRouter = DvexToolRouter(context, appLauncher, deviceControl)
-  private val responseGenerator = DvexResponseGenerator()
-  private val contactResolver = ContactResolver(context)
+    private val intentDetector = IntentDetector()
 
-  // Track pending sensitive confirmation within the brain
-  private var activePendingIntent: DvexIntent? = null
-  private var activePendingId: String? = null
+    private val conversationContext = ConversationContext()
 
-  // Latest speech-recognition confidence (null when unavailable or typed input)
-  @Volatile private var lastAsrConfidence: Float? = null
+    private val toolRouter = DvexToolRouter(
+        context,
+        appLauncher,
+        deviceControl
+    )
 
-  /**
-   * Processes user input end-to-end through the brain pipeline.
-   */
-  suspend fun process(rawInput: String): BrainExecutionResult {
-    Log.i(TAG_BRAIN, "Input: $rawInput")
+    // AI is used ONLY for natural-language response generation.
+    // It does not execute device actions.
+    private val aiEngine = DvexAiEngine()
 
-    if (rawInput.isBlank()) {
-      Log.i(TAG_BRAIN, "Empty input provided to brain; returning silent standby result")
-      return BrainExecutionResult(
-        intent = DvexIntent.Conversation(""),
-        toolResult = DvexToolResult(DvexToolStatus.SUCCESS, "standby", "", ""),
-        spokenText = "",
-        displayText = "",
-        language = conversationContext.lastLanguage,
-        toolName = "standby"
-      )
+    private val responseGenerator = DvexResponseGenerator(
+        aiEngine = aiEngine
+    )
+
+    private val contactResolver = ContactResolver(context)
+
+    private var activePendingIntent: DvexIntent? = null
+    private var activePendingId: String? = null
+
+    @Volatile
+    private var lastAsrConfidence: Float? = null
+
+    suspend fun process(rawInput: String): BrainExecutionResult {
+
+        Log.i(TAG_BRAIN, "Input: $rawInput")
+
+        if (rawInput.isBlank()) {
+            return BrainExecutionResult(
+                intent = DvexIntent.Conversation(""),
+                toolResult = DvexToolResult(
+                    DvexToolStatus.SUCCESS,
+                    "standby",
+                    "",
+                    ""
+                ),
+                spokenText = "",
+                displayText = "",
+                language = conversationContext.lastLanguage,
+                toolName = "standby"
+            )
+        }
+
+        val lower = rawInput
+            .lowercase(Locale.ROOT)
+            .trim()
+
+        /*
+         * ---------------------------------------------------------
+         * PENDING CONFIRMATION
+         * ---------------------------------------------------------
+         */
+
+        if (activePendingIntent != null) {
+
+            if (isAffirmative(lower)) {
+
+                val confirmedIntent = activePendingIntent!!
+
+                activePendingIntent = null
+                activePendingId = null
+
+                val confirmationLang =
+                    intentDetector
+                        .detectIntent(
+                            rawInput,
+                            conversationContext
+                        )
+                        .language
+
+                val effectiveLang =
+                    if (confirmationLang != DetectedLanguage.ENGLISH) {
+                        confirmationLang
+                    } else {
+                        conversationContext.lastLanguage
+                    }
+
+                val executionResult =
+                    executeConfirmedAction(confirmedIntent)
+
+                val tone =
+                    responseGenerator.estimateTone(rawInput)
+
+                val spoken =
+                    responseGenerator.generateResponse(
+                        intent = confirmedIntent,
+                        toolResult = executionResult,
+                        language = effectiveLang,
+                        userInput = rawInput,
+                        context = conversationContext,
+                        tone = tone
+                    )
+
+                conversationContext.update(
+                    input = rawInput,
+                    intent = confirmedIntent,
+                    toolResult = executionResult,
+                    language = effectiveLang,
+                    tone = tone,
+                    spokenResponse = spoken
+                )
+
+                return BrainExecutionResult(
+                    intent = confirmedIntent,
+                    toolResult = executionResult,
+                    spokenText = spoken,
+                    displayText = spoken,
+                    language = effectiveLang,
+                    toolName = executionResult.toolName
+                )
+            }
+
+            else if (isNegative(lower)) {
+
+                activePendingIntent = null
+                activePendingId = null
+
+                val cancelLang =
+                    intentDetector
+                        .detectIntent(
+                            rawInput,
+                            conversationContext
+                        )
+                        .language
+
+                val effectiveLang =
+                    if (cancelLang != DetectedLanguage.ENGLISH) {
+                        cancelLang
+                    } else {
+                        conversationContext.lastLanguage
+                    }
+
+                val cancelMessage =
+                    when (effectiveLang) {
+
+                        DetectedLanguage.TAMIL ->
+                            "செயல் ரத்து செய்யப்பட்டது, Sir."
+
+                        DetectedLanguage.TANGLISH ->
+                            "Action cancel panniyachu, Sir."
+
+                        else ->
+                            "Action cancelled, Sir."
+                    }
+
+                val cancelResult =
+                    DvexToolResult(
+                        status = DvexToolStatus.SUCCESS,
+                        toolName = "cancellation",
+                        message = cancelMessage,
+                        spokenText = cancelMessage
+                    )
+
+                conversationContext.update(
+                    input = rawInput,
+                    intent = DvexIntent.Conversation(rawInput),
+                    toolResult = cancelResult,
+                    language = effectiveLang,
+                    tone = EstimatedTone.NEUTRAL,
+                    spokenResponse = cancelMessage
+                )
+
+                return BrainExecutionResult(
+                    intent = DvexIntent.Conversation(rawInput),
+                    toolResult = cancelResult,
+                    spokenText = cancelMessage,
+                    displayText = cancelMessage,
+                    language = effectiveLang,
+                    toolName = "cancellation"
+                )
+            }
+
+            /*
+             * The user said something other than yes/no.
+             * Clear the pending confirmation and process the new
+             * input normally.
+             */
+            activePendingIntent = null
+            activePendingId = null
+        }
+
+        /*
+         * ---------------------------------------------------------
+         * INTENT DETECTION
+         * ---------------------------------------------------------
+         */
+
+        val detection =
+            intentDetector.detectIntent(
+                rawInput,
+                conversationContext
+            )
+
+        var intent = detection.intent
+
+        val confidence = detection.confidence
+        val language = detection.language
+
+        /*
+         * ---------------------------------------------------------
+         * ASR + INTENT CONFIDENCE
+         * ---------------------------------------------------------
+         */
+
+        val asrConfidence = lastAsrConfidence
+
+        if (
+            asrConfidence != null &&
+            asrConfidence < ASR_LOW_CONFIDENCE_THRESHOLD &&
+            confidence < INTENT_LOW_CONFIDENCE_THRESHOLD &&
+            intent is DvexIntent.Conversation
+        ) {
+
+            intent =
+                DvexIntent.LowConfidence(
+                    clarificationPrompt =
+                        "Sorry, Sir, I didn't quite catch that. Could you say it again?",
+                    candidateIntent = null
+                )
+        }
+
+        /*
+         * ---------------------------------------------------------
+         * TONE
+         * ---------------------------------------------------------
+         */
+
+        val tone =
+            responseGenerator.estimateTone(rawInput)
+
+        /*
+         * ---------------------------------------------------------
+         * TOOL EXECUTION
+         *
+         * Tools remain the authority for real-world actions.
+         * Gemini/AI does NOT execute these actions.
+         * ---------------------------------------------------------
+         */
+
+        val toolResult =
+            toolRouter.execute(
+                intent,
+                conversationContext
+            )
+
+        /*
+         * ---------------------------------------------------------
+         * NATURAL RESPONSE GENERATION
+         *
+         * DvexResponseGenerator -> DvexAiEngine
+         *
+         * AI generates only the conversational response using
+         * the verified tool result.
+         * ---------------------------------------------------------
+         */
+
+        val spokenResponse =
+            responseGenerator.generateResponse(
+                intent = intent,
+                toolResult = toolResult,
+                language = language,
+                userInput = rawInput,
+                context = conversationContext,
+                tone = tone
+            )
+
+        /*
+         * ---------------------------------------------------------
+         * UPDATE CONVERSATION CONTEXT
+         * ---------------------------------------------------------
+         */
+
+        conversationContext.update(
+            input = rawInput,
+            intent = intent,
+            toolResult = toolResult,
+            language = language,
+            tone = tone,
+            spokenResponse = spokenResponse
+        )
+
+        /*
+         * ---------------------------------------------------------
+         * CONFIRMATION
+         * ---------------------------------------------------------
+         */
+
+        if (toolResult.requiresConfirmation) {
+
+            activePendingIntent = intent
+            activePendingId = toolResult.pendingActionId
+        }
+
+        /*
+         * ---------------------------------------------------------
+         * FINAL RESULT
+         * ---------------------------------------------------------
+         */
+
+        return BrainExecutionResult(
+            intent = intent,
+            toolResult = toolResult,
+            spokenText = spokenResponse,
+            displayText = spokenResponse,
+            language = language,
+            toolName = toolResult.toolName,
+            isSensitiveAction = toolResult.requiresConfirmation,
+            pendingActionId = toolResult.pendingActionId
+        )
     }
 
-    val lower = rawInput.lowercase(Locale.ROOT).trim()
+    /**
+     * Execute an action after the user has explicitly confirmed it.
+     */
+    private suspend fun executeConfirmedAction(
+        intent: DvexIntent
+    ): DvexToolResult {
+        return toolRouter.executeConfirmed(intent)
+    }
 
-    // 1. Check for confirmation responses if a sensitive action is currently pending
-    if (activePendingIntent != null) {
-      if (isAffirmative(lower)) {
-        Log.i(TAG_BRAIN, "User confirmed pending action: $activePendingIntent")
-        val confirmedIntent = activePendingIntent!!
+    /**
+     * Cancel the currently pending confirmation.
+     */
+    fun cancelPendingConfirmation() {
         activePendingIntent = null
         activePendingId = null
-
-        val confirmationLang = intentDetector.detectIntent(rawInput, conversationContext).language
-        val effectiveLang = if (confirmationLang != DetectedLanguage.ENGLISH) {
-          confirmationLang
-        } else {
-          conversationContext.lastLanguage
-        }
-
-        // Execute the confirmed sensitive action
-        val executionResult = executeConfirmedAction(confirmedIntent)
-        val tone = responseGenerator.estimateTone(rawInput)
-        val spoken = responseGenerator.generateResponse(
-          intent = confirmedIntent,
-          toolResult = executionResult,
-          language = effectiveLang,
-          userInput = rawInput,
-          context = conversationContext,
-          tone = tone
-        )
-        conversationContext.update(
-          input = rawInput,
-          intent = confirmedIntent,
-          toolResult = executionResult,
-          language = effectiveLang,
-          tone = tone,
-          spokenResponse = spoken
-        )
-        Log.i(TAG_RESPONSE, spoken)
-        return BrainExecutionResult(
-          intent = confirmedIntent,
-          toolResult = executionResult,
-          spokenText = spoken,
-          displayText = spoken,
-          language = effectiveLang,
-          toolName = executionResult.toolName
-        )
-      } else if (isNegative(lower)) {
-        Log.i(TAG_BRAIN, "User cancelled pending action.")
-        activePendingIntent = null
-        activePendingId = null
-
-        val cancelLang = intentDetector.detectIntent(rawInput, conversationContext).language
-        val effectiveLang = if (cancelLang != DetectedLanguage.ENGLISH) {
-          cancelLang
-        } else {
-          conversationContext.lastLanguage
-        }
-
-        val cancelMessage = when (effectiveLang) {
-          DetectedLanguage.TAMIL -> "செயல் ரத்து செய்யப்பட்டது, Sir."
-          DetectedLanguage.TANGLISH -> "Action cancel panniyachu, Sir."
-          else -> "Action cancelled, Sir."
-        }
-
-        val cancelResult = DvexToolResult(
-          status = DvexToolStatus.SUCCESS,
-          toolName = "cancellation",
-          message = cancelMessage,
-          spokenText = cancelMessage
-        )
-        conversationContext.update(
-          input = rawInput,
-          intent = DvexIntent.Conversation(rawInput),
-          toolResult = cancelResult,
-          language = effectiveLang,
-          tone = EstimatedTone.NEUTRAL,
-          spokenResponse = cancelMessage
-        )
-        Log.i(TAG_RESPONSE, cancelMessage)
-        return BrainExecutionResult(
-          intent = DvexIntent.Conversation(rawInput),
-          toolResult = cancelResult,
-          spokenText = cancelMessage,
-          displayText = cancelMessage,
-          language = effectiveLang,
-          toolName = "cancellation"
-        )
-      }
-      // If user said something completely different, clear the pending confirmation and continue
-      activePendingIntent = null
-      activePendingId = null
     }
 
-    // 2. Intent Understanding
-    val detection = intentDetector.detectIntent(rawInput, conversationContext)
-    var intent = detection.intent
-    val confidence = detection.confidence
-    val language = detection.language
-
-    Log.i(TAG_INTENT, "$intent (confidence: $confidence, lang: $language)")
-
-    // 2.1 Uncertain speech: if speech recognition was low-confidence and the parsed
-    // intent is weak, ask a short clarification instead of guessing an action.
-    // Never invent missing words or facts.
-    val asrConfidence = lastAsrConfidence
-    if (asrConfidence != null && asrConfidence < ASR_LOW_CONFIDENCE_THRESHOLD &&
-        confidence < INTENT_LOW_CONFIDENCE_THRESHOLD &&
-        intent is DvexIntent.Conversation
-    ) {
-      Log.i(TAG_BRAIN, "Low ASR confidence ($asrConfidence) with weak intent; requesting clarification")
-      intent = DvexIntent.LowConfidence(
-        clarificationPrompt = "Sorry, Sir, I didn't quite catch that. Could you say it again?",
-        candidateIntent = null
-      )
+    /**
+     * Returns true when D-VEX is waiting for confirmation.
+     */
+    fun hasPendingConfirmation(): Boolean {
+        return activePendingIntent != null
     }
 
-    // 2.5 Estimate Tone
-    val tone = responseGenerator.estimateTone(rawInput)
+    /*
+     * -------------------------------------------------------------
+     * AFFIRMATIVE / NEGATIVE DETECTION
+     * -------------------------------------------------------------
+     */
 
-    // 3. Tool Selection & Execution
-    val toolResult = toolRouter.execute(intent, conversationContext)
-    Log.i(TAG_RESULT, "Tool: ${toolResult.toolName} -> Status: ${toolResult.status}")
+    private fun isAffirmative(lower: String): Boolean {
 
-    // 4. Natural Response Generation (Internal Consideration: meaning, goal, context, tone, language)
-    val spokenResponse = responseGenerator.generateResponse(
-      intent = intent,
-      toolResult = toolResult,
-      language = language,
-      userInput = rawInput,
-      context = conversationContext,
-      tone = tone
-    )
-    Log.i(TAG_RESPONSE, spokenResponse)
-
-    // 5. Update Conversation Context
-    conversationContext.update(
-      input = rawInput,
-      intent = intent,
-      toolResult = toolResult,
-      language = language,
-      tone = tone,
-      spokenResponse = spokenResponse
-    )
-
-    // 6. Check if confirmation is required (Sensitive actions: Call, SMS, Email)
-    if (toolResult.requiresConfirmation) {
-      activePendingIntent = intent
-      activePendingId = toolResult.pendingActionId
-      Log.i(TAG_BRAIN, "Armed pending confirmation for sensitive action: ${intent::class.simpleName}")
+        return lower in setOf(
+            "yes",
+            "yeah",
+            "yep",
+            "yup",
+            "sure",
+            "okay",
+            "ok",
+            "go ahead",
+            "do it",
+            "confirm",
+            "confirmed",
+            "proceed",
+            "please do",
+            "ஆம்",
+            "ஆமாம்",
+            "சரி",
+            "செய்",
+            "செய்யலாம்",
+            "பண்ணு",
+            "பண்ணலாம்",
+            "ஆமா",
+            "ok sir",
+            "yes sir",
+            "sure sir"
+        )
     }
 
-    return BrainExecutionResult(
-      intent = intent,
-      toolResult = toolResult,
-      spokenText = spokenResponse,
-      displayText = spokenResponse,
-      language = language,
-      toolName = toolResult.toolName,
-      isSensitiveAction = toolResult.requiresConfirmation,
-      pendingActionId = toolResult.pendingActionId
-    )
-  }
+    private fun isNegative(lower: String): Boolean {
 
-  /**
-   * Executes a sensitive action once explicit user confirmation has been granted.
-   */
-  private suspend fun executeConfirmedAction(intent: DvexIntent): DvexToolResult {
-    return toolRouter.executeConfirmed(intent)
-  }
+        return lower in setOf(
+            "no",
+            "nope",
+            "nah",
+            "cancel",
+            "cancel it",
+            "stop",
+            "don't",
+            "do not",
+            "never mind",
+            "never mind it",
+            "no thanks",
+            "cancel that",
+            "வேண்டாம்",
+            "ரத்து செய்",
+            "ரத்து",
+            "நிறுத்து",
+            "பண்ணாதே",
+            "வேணாம்",
+            "வேண்டாம் sir",
+            "cancel sir"
+        )
+    }
 
-  fun cancelPendingConfirmation() {
-    activePendingIntent = null
-    activePendingId = null
-  }
+    /*
+     * -------------------------------------------------------------
+     * ASR CONFIDENCE
+     * -------------------------------------------------------------
+     */
 
-  fun hasPendingConfirmation(): Boolean = activePendingIntent != null
+    fun reportAsrConfidence(confidence: Float?) {
+        lastAsrConfidence = confidence
+    }
 
-  private fun isAffirmative(lower: String): Boolean {
-    val clean = lower.trimEnd('.', '?', '!', ',').trim()
-    return clean == "yes" || clean == "confirm" || clean == "call" ||
-        clean == "send" || clean == "sure" || clean == "do it" ||
-        clean == "yeah" || clean == "yep" || clean == "aama" || clean == "seri" ||
-        clean == "sari" || clean == "pannu" || clean == "pannunga" || clean == "anupu" ||
-        clean == "anuppu" || clean == "ok" || clean == "okay" || clean == "yes sir" ||
-        clean == "sure sir" || clean == "okay sir" || clean == "சரி" || clean == "பண்ணு" ||
-        clean == "அனுப்பு" || clean == "ஆம்" || clean == "ஆமாம்" ||
-        clean.contains("yes") || clean.contains("confirm") || clean.contains("ஆமாம்") ||
-        clean.contains("சரி") || clean.contains("sure")
-  }
+    /*
+     * -------------------------------------------------------------
+     * RESET
+     * -------------------------------------------------------------
+     */
 
-  private fun isNegative(lower: String): Boolean {
-    val clean = lower.trimEnd('.', '?', '!', ',')
-    return clean == "no" || clean == "cancel" || clean == "stop" ||
-        clean == "don't" || clean == "nevermind" || clean == "vendaam" || clean == "vendam" ||
-        clean == "illai" || clean == "வேண்டாம்" || clean == "இல்லை" || clean == "நிறுத்து" ||
-        clean.contains("cancel") || clean.contains("stop")
-  }
+    fun resetContext() {
 
-  /** Reports the latest speech-recognition confidence for uncertain-speech handling. */
-  fun reportAsrConfidence(confidence: Float?) {
-    lastAsrConfidence = confidence
-  }
+        conversationContext.clear()
 
-  fun resetContext() {
-    conversationContext.clear()
-    cancelPendingConfirmation()
-    lastAsrConfidence = null
-  }
+        cancelPendingConfirmation()
 
-  companion object {
-    private const val TAG_BRAIN = "[D-VEX][BRAIN]"
-    private const val TAG_INTENT = "[D-VEX][INTENT]"
-    private const val TAG_TOOL = "[D-VEX][TOOL]"
-    private const val TAG_RESULT = "[D-VEX][RESULT]"
-    private const val TAG_RESPONSE = "[D-VEX][RESPONSE]"
+        lastAsrConfidence = null
+    }
 
-    /** ASR scores below this are considered uncertain transcriptions. */
-    private const val ASR_LOW_CONFIDENCE_THRESHOLD = 0.4f
-    /** Weakly-parsed intents (e.g. bare Conversation fallback) below this are not trusted. */
-    private const val INTENT_LOW_CONFIDENCE_THRESHOLD = 0.75f
-  }
+    companion object {
+
+        private const val TAG_BRAIN =
+            "[D-VEX][BRAIN]"
+
+        private const val TAG_INTENT =
+            "[D-VEX][INTENT]"
+
+        private const val TAG_TOOL =
+            "[D-VEX][TOOL]"
+
+        private const val TAG_RESULT =
+            "[D-VEX][RESULT]"
+
+        private const val TAG_RESPONSE =
+            "[D-VEX][RESPONSE]"
+
+        private const val ASR_LOW_CONFIDENCE_THRESHOLD =
+            0.4f
+
+        private const val INTENT_LOW_CONFIDENCE_THRESHOLD =
+            0.75f
+    }
 }
