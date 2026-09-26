@@ -1,1112 +1,377 @@
 package com.example.brain
 
 import android.util.Log
+import com.example.ai.AiEngine
 import java.util.Locale
+import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.withTimeout
 
-class DvexResponseGenerator {
+/**
+ * Natural conversational response layer for D-VEX Smart Brain.
+ *
+ * V2 — LLM-GENERATED REPLIES:
+ * Instead of selecting a canned string from per-language templates, this layer
+ * now builds a compact factual prompt describing the just-executed action, the
+ * REAL tool result data, the user's verbatim utterance (so the model mirrors the
+ * user's exact language/script/tone), and memory hints — then asks the LLM to
+ * write a short natural reply.
+ *
+ * Hard guarantees preserved:
+ * 1. NEVER FABRICATES DATA: the prompt passes only real tool numbers (weather,
+ *    time, calculation results) and forbids the model from inventing facts.
+ *    The model phrases; it does not compute.
+ * 2. NEVER GOES SILENT: any LLM failure (timeout, blank, missing key, error)
+ *    falls back to a simple honest hardcoded string.
+ * 3. NEVER HANGS: a hard 8s timeout bounds the LLM call, and the engine itself
+ *    is already timeout-bounded internally.
+ * 4. NON-BLOCKING: generateResponse is suspend; callers (DvexSmartBrain.process)
+ *    already run inside coroutines on Dispatchers.Main and simply await it.
+ * 5. NO TOOL-LOGIC CHANGES: intent classification and DvexToolRouter behavior
+ *    are untouched — intent decides WHAT happens; only HOW D-VEX words it.
+ *
+ * Personality: calm, smart, concise, confident, warm and natural,
+ * mirroring the user's own language — Tamil script, Tanglish, English, or mixed.
+ */
+class DvexResponseGenerator(
+  private val aiEngine: AiEngine? = null
+) {
 
-    companion object {
-        private const val TAG = "DvexResponseGenerator"
+  /**
+   * Estimates conversational tone from the user's words and conversational cues.
+   * Passed to the LLM as warmth/styling signal — no longer a branch selector for
+   * pre-written lines.
+   */
+  fun estimateTone(userInput: String): EstimatedTone {
+    val text = userInput.lowercase(Locale.ROOT)
+    if (text.isBlank()) return EstimatedTone.NEUTRAL
+
+    // Urgent cues
+    if (text.contains("urgent") || text.contains("urgently") || text.contains("emergency") ||
+        text.contains("immediately") || text.contains("right now") || text.contains("asap") ||
+        text.contains("hurry") || text.contains("quick") || text.contains("quickly") ||
+        text.contains("seekiram") || text.contains("seekirama") || text.contains("udane") ||
+        text.contains("ippove") || text.contains("avacharam") || text.contains("vegam") ||
+        text.contains("vegama") || text.contains("fast") || text.contains("speed") ||
+        text.contains("உடனே") || text.contains("சீக்கிரம்") || text.contains("சீக்கிரமா") ||
+        text.contains("அவசரம்")
+    ) {
+      return EstimatedTone.URGENT
     }
 
-    private data class MemoryProfile(
-        val preferredName: String? = null,
-        val replyStyle: String? = null,
-        val personality: String? = null,
-        val languagePreference: String? = null
-    )
-
-    fun estimateTone(userInput: String): EstimatedTone {
-        val text = userInput.lowercase(Locale.getDefault()).trim()
-
-        if (text.isBlank()) return EstimatedTone.NEUTRAL
-
-        val urgentWords = listOf(
-            "urgent",
-            "emergency",
-            "help me now",
-            "quick",
-            "quickly",
-            "immediately",
-            "asap",
-            "அவசரம்",
-            "அவசரமா",
-            "உடனே",
-            "seekiram",
-            "seekkiram"
-        )
-
-        val frustratedWords = listOf(
-            "annoying",
-            "frustrated",
-            "frustrating",
-            "irritated",
-            "angry",
-            "hate this",
-            "not working",
-            "why isn't",
-            "why isnt",
-            "kadupa",
-            "kadupu",
-            "erichal",
-            "erichala",
-            "kovam",
-            "பிடிக்கல",
-            "எரிச்சல்",
-            "கோபம்"
-        )
-
-        val sadWords = listOf(
-            "sad",
-            "upset",
-            "depressed",
-            "lonely",
-            "alone",
-            "crying",
-            "cry",
-            "hurt",
-            "bad day",
-            "miss",
-            "feeling low",
-            "feel low",
-            "sogama",
-            "sogam",
-            "kastama",
-            "kastam",
-            "azhuga",
-            "அழுகை",
-            "சோகம்",
-            "கஷ்டம்",
-            "தனியா"
-        )
-
-        val confusedWords = listOf(
-            "confused",
-            "don't understand",
-            "dont understand",
-            "not understand",
-            "what do you mean",
-            "how",
-            "why",
-            "puriyala",
-            "puriyavae illa",
-            "puriyalae",
-            "எப்படி",
-            "ஏன்",
-            "புரியல"
-        )
-
-        val excitedWords = listOf(
-            "wow",
-            "awesome",
-            "amazing",
-            "excited",
-            "yay",
-            "super",
-            "semma",
-            "vera level",
-            "mass",
-            "செம்ம",
-            "அருமை"
-        )
-
-        val happyWords = listOf(
-            "happy",
-            "great",
-            "good",
-            "nice",
-            "love it",
-            "thanks",
-            "thank you",
-            "nandri",
-            "sandhosham",
-            "சந்தோஷம்",
-            "நன்றி"
-        )
-
-        return when {
-            containsAny(text, urgentWords) -> EstimatedTone.URGENT
-            containsAny(text, frustratedWords) -> EstimatedTone.FRUSTRATED
-            containsAny(text, sadWords) -> EstimatedTone.SAD
-            containsAny(text, confusedWords) -> EstimatedTone.CONFUSED
-            containsAny(text, excitedWords) -> EstimatedTone.EXCITED
-            containsAny(text, happyWords) -> EstimatedTone.HAPPY
-            else -> EstimatedTone.NEUTRAL
-        }
+    // Frustrated cues
+    if (text.contains("annoying") || text.contains("stupid") || text.contains("worst") ||
+        text.contains("waste") || text.contains("hate") || text.contains("angry") ||
+        text.contains("not working") || text.contains("useless") || text.contains("shut up") ||
+        text.contains("kaduppa") || text.contains("kaduppu") || text.contains("kadupethatha") ||
+        text.contains("erichal") || text.contains("erichala") || text.contains("worstu") ||
+        text.contains("wasteu") || text.contains("vela seiyala") || text.contains("vela pakkala") ||
+        text.contains("ennada idhu") || text.contains("thirumba thirumba") || text.contains("frustrated") ||
+        text.contains("frustrating") || text.contains("irritat") || text.contains("tension") ||
+        text.contains("கடுப்பு") || text.contains("எரிச்சல்") || text.contains("வேலை செய்யவில்லை") ||
+        text.contains("வெறுப்பு") ||
+        text.contains("மாட்டேங்குது") || text.contains("சரியா போகவே") || text.contains("சரியா போகல") ||
+        text.contains("sariya pogala") || text.contains("sariya poagala") ||
+        text.contains("pogave mattenguthu") || text.contains("pogave mattenkuthu") ||
+        text.contains("ellame sariya") || text.contains("ellam sariya")
+    ) {
+      return EstimatedTone.FRUSTRATED
     }
 
-    fun generateResponse(
-        intent: DvexIntent,
-        toolResult: DvexToolResult,
-        language: DetectedLanguage,
-        userInput: String = "",
-        context: ConversationContext? = null,
-        tone: EstimatedTone = estimateTone(userInput),
-        memoryHint: String = ""
-    ): String {
-
-        val memory = parseMemory(memoryHint)
-
-        Log.d(
-            TAG,
-            "Generating response | language=$language tone=$tone memory=$memory"
-        )
-
-        // Repeat request
-        if (isRepeatRequest(userInput) && context != null) {
-            val previous = context.lastSpokenResponse
-
-            if (!previous.isNullOrBlank()) {
-                return personalizeResponse(
-                    previous,
-                    memory,
-                    language,
-                    tone,
-                    userInput
-                )
-            }
-        }
-
-        val baseResponse = when (language) {
-
-            DetectedLanguage.TAMIL -> {
-                generateTamilResponse(
-                    intent = intent,
-                    toolResult = toolResult,
-                    userInput = userInput,
-                    tone = tone,
-                    context = context
-                )
-            }
-
-            DetectedLanguage.TANGLISH -> {
-                generateTanglishResponse(
-                    intent = intent,
-                    toolResult = toolResult,
-                    userInput = userInput,
-                    tone = tone,
-                    context = context
-                )
-            }
-
-            else -> {
-                generateEnglishResponse(
-                    intent = intent,
-                    toolResult = toolResult,
-                    userInput = userInput,
-                    tone = tone,
-                    context = context
-                )
-            }
-        }
-
-        return personalizeResponse(
-            response = baseResponse,
-            memory = memory,
-            language = language,
-            tone = tone,
-            userInput = userInput
-        )
+    // Confused cues
+    if (text.contains("what do you mean") || text.contains("confused") || text.contains("confusing") ||
+        text.contains("don't understand") || text.contains("dont understand") || text.contains("how come") ||
+        text.contains("puriyala") || text.contains("purila") || text.contains("puriyave illa") ||
+        text.contains("enna solra") || text.contains("enna soldra") || text.contains("enna aachu") ||
+        text.contains("theriyala") || text.contains("not clear") || text.contains("புரியவில்லை") ||
+        text.contains("என்ன சொல்றீங்க") || text.contains("என்ன சொல்ற") || text.contains("விளங்கவில்லை")
+    ) {
+      return EstimatedTone.CONFUSED
     }
 
-    // ============================================================
-    // MEMORY
-    // ============================================================
-
-    private fun parseMemory(memoryHint: String): MemoryProfile {
-
-        if (memoryHint.isBlank()) {
-            return MemoryProfile()
-        }
-
-        return MemoryProfile(
-            preferredName = extractMemoryValue(
-                memoryHint,
-                "User prefers to be called"
-            ),
-            replyStyle = extractMemoryValue(
-                memoryHint,
-                "Preferred reply style"
-            ),
-            personality = extractMemoryValue(
-                memoryHint,
-                "Preferred assistant personality"
-            ),
-            languagePreference = extractMemoryValue(
-                memoryHint,
-                "Preferred language style"
-            )
-        )
+    // Excited cues
+    if (text.contains("wow") || text.contains("amazing") || text.contains("let's go") ||
+        text.contains("unbelievable") || text.contains("vera level") || text.contains("mass kaatita") ||
+        text.contains("massu") || text.contains("mass") || text.contains("excited") ||
+        text.contains("awesome") || text.contains("fire") || text.contains("superb") ||
+        text.contains("brilliant") || text.contains("marana mass") || text.contains("sema mass") ||
+        text.contains("வேற லெவல்") || text.contains("வேற மாறி")
+    ) {
+      return EstimatedTone.EXCITED
     }
 
-    private fun extractMemoryValue(
-        memoryHint: String,
-        prefix: String
-    ): String? {
-
-        val line = memoryHint
-            .lines()
-            .firstOrNull {
-                it.trim()
-                    .startsWith(prefix, ignoreCase = true)
-            }
-            ?: return null
-
-        val value = line
-            .substringAfter(":", "")
-            .trim()
-
-        if (value.isNotBlank()) {
-            return value
-        }
-
-        // Handles:
-        // "User prefers to be called Alex."
-        val afterPrefix = line
-            .substringAfter(prefix, "")
-            .trim()
-            .trim('.')
-
-        return afterPrefix.ifBlank { null }
+    // Happy / Grateful cues
+    if (text.contains("super") || text.contains("great") || text.contains("wonderful") ||
+        text.contains("happy") || text.contains("glad") || text.contains("thank you so much") ||
+        text.contains("love it") || text.contains("semma") || text.contains("kalakkita") ||
+        text.contains("arputham") || text.contains("good job") || text.contains("well done") ||
+        text.contains("romba nandri") || text.contains("மகிழ்ச்சி") || text.contains("சூப்பர்") ||
+        text.contains("அற்புதம்") || text.contains("நன்றி")
+    ) {
+      return EstimatedTone.HAPPY
     }
 
-    private fun personalizeResponse(
-        response: String,
-        memory: MemoryProfile,
-        language: DetectedLanguage,
-        tone: EstimatedTone,
-        userInput: String
-    ): String {
-
-        if (response.isBlank()) return response
-
-        var result = response.trim()
-
-        /*
-         * Do NOT add the user's name to every message.
-         * That sounds robotic.
-         */
-        val shouldUseName =
-            memory.preferredName != null &&
-                    (
-                            tone == EstimatedTone.SAD ||
-                                    tone == EstimatedTone.FRUSTRATED ||
-                                    tone == EstimatedTone.HAPPY ||
-                                    tone == EstimatedTone.EXCITED ||
-                                    isGreeting(userInput)
-                            )
-
-        if (shouldUseName) {
-
-            val name = memory.preferredName!!.trim()
-
-            if (
-                name.isNotBlank() &&
-                !containsName(result, name)
-            ) {
-                result = addNaturalName(
-                    result,
-                    name,
-                    language,
-                    tone
-                )
-            }
-        }
-
-        /*
-         * Reply style
-         */
-        val style = memory.replyStyle
-            ?.lowercase(Locale.getDefault())
-            ?: ""
-
-        if (style.contains("short") ||
-            style.contains("concise") ||
-            style.contains("brief")
-        ) {
-            result = makeConcise(result)
-        }
-
-        /*
-         * Personality
-         */
-        val personality = memory.personality
-            ?.lowercase(Locale.getDefault())
-            ?: ""
-
-        if (
-            personality.contains("bestie") ||
-            personality.contains("friendly") ||
-            personality.contains("lovely") ||
-            personality.contains("warm")
-        ) {
-            result = makeWarm(result, language, tone)
-        }
-
-        /*
-         * Language preference is treated only as a style hint.
-         * DetectedLanguage remains the primary source.
-         */
-        return result.trim()
+    // Sad / Low cues
+    if (text.contains("sad") || text.contains("depressed") || text.contains("feeling down") ||
+        text.contains("feeling low") || text.contains("bad day") || text.contains("unhappy") ||
+        text.contains("upset") || text.contains("heartbroken") || text.contains("crying") ||
+        text.contains("sogam") || text.contains("sogama") || text.contains("kashtama") ||
+        text.contains("vali") || text.contains("vali thaangala") || text.contains("kavalaya") ||
+        text.contains("சோகம்") || text.contains("கஷ்டமா இருக்கு") || text.contains("மனசு சரியில்லை") ||
+        text.contains("வருத்தம்") || text.contains("கவலை")
+    ) {
+      return EstimatedTone.SAD
     }
 
-    private fun addNaturalName(
-        response: String,
-        name: String,
-        language: DetectedLanguage,
-        tone: EstimatedTone
-    ): String {
+    return EstimatedTone.NEUTRAL
+  }
 
+  /**
+   * Generates the final spoken/displayed reply.
+   *
+   * Flow:
+   * 1. Repeat requests replay the last spoken response directly (no LLM).
+   * 2. Low-confidence speech gets a short deterministic clarification (no LLM —
+   *    these must be instant and never hallucinate an action).
+   * 3. Everything else is phrased by the LLM from a factual prompt; on any LLM
+   *    failure the tool's own honest result or a simple fallback is returned.
+   *
+   * The [memoryHint] is an optional pre-rendered string of remembered user facts
+   * (preferred name, likes, style) from the existing memory store — passed into
+   * the prompt so the LLM can personalize naturally.
+   */
+  suspend fun generateResponse(
+    intent: DvexIntent,
+    toolResult: DvexToolResult,
+    language: DetectedLanguage,
+    userInput: String = "",
+    context: ConversationContext? = null,
+    tone: EstimatedTone = estimateTone(userInput),
+    memoryHint: String? = null
+  ): String {
+    val lowerInput = userInput.lowercase(Locale.ROOT).trim()
+
+    // 1. Context Continuity: Repeat requests (kept as-is; no LLM needed)
+    if (context != null && (lowerInput == "repeat that" || lowerInput == "what did you say" ||
+            lowerInput == "enna sonna" || lowerInput == "திரும்ப சொல்லு" || lowerInput == "repeat")
+    ) {
+      val lastSaid = context.lastSpokenResponse
+      if (!lastSaid.isNullOrBlank()) {
         return when (language) {
-
-            DetectedLanguage.TAMIL -> {
-                when (tone) {
-                    EstimatedTone.SAD ->
-                        "$name, $response"
-
-                    EstimatedTone.FRUSTRATED ->
-                        "$name, $response"
-
-                    else ->
-                        "$name, $response"
-                }
-            }
-
-            DetectedLanguage.TANGLISH -> {
-                "$name, $response"
-            }
-
-            else -> {
-                "$name, $response"
-            }
+          DetectedLanguage.TAMIL -> "கடைசியாக நான் சொன்னது: $lastSaid"
+          DetectedLanguage.TANGLISH -> "Kadasila sonnathu: $lastSaid"
+          DetectedLanguage.ENGLISH -> "I said: $lastSaid"
         }
+      }
     }
 
-    private fun makeConcise(response: String): String {
-
-        val cleaned = response
-            .replace(Regex("\\s+"), " ")
-            .trim()
-
-        if (cleaned.length <= 140) {
-            return cleaned
-        }
-
-        val sentences = cleaned.split(
-            Regex("(?<=[.!?])\\s+")
-        )
-
-        if (sentences.isNotEmpty()) {
-            return sentences
-                .take(2)
-                .joinToString(" ")
-                .trim()
-        }
-
-        return cleaned.take(160).trim()
+    // 2. Uncertain speech / garbled transcription: short, instant, deterministic
+    // clarification. Never invents missing words or facts, so it stays LLM-free.
+    if (intent is DvexIntent.LowConfidence) {
+      val response = generateClarification(language, intent.candidateIntent)
+      Log.i(TAG, "Generated clarification ($language, tone=$tone): \"$response\"")
+      return response
     }
 
-    private fun makeWarm(
-        response: String,
-        language: DetectedLanguage,
-        tone: EstimatedTone
-    ): String {
-
-        // Don't artificially add warmth to factual/tool responses.
-        if (
-            tone == EstimatedTone.URGENT ||
-            tone == EstimatedTone.CONFUSED
-        ) {
-            return response
-        }
-
-        if (
-            response.contains("❤️") ||
-            response.contains("😊") ||
-            response.contains("🙂") ||
-            response.contains("💙")
-        ) {
-            return response
-        }
-
-        if (
-            tone == EstimatedTone.SAD ||
-            tone == EstimatedTone.FRUSTRATED
-        ) {
-            return when (language) {
-
-                DetectedLanguage.TAMIL ->
-                    "$response 💙"
-
-                DetectedLanguage.TANGLISH ->
-                    "$response 💙"
-
-                else ->
-                    "$response 💙"
-            }
-        }
-
-        return response
+    // 3. LLM path: phrase a natural reply from the real action + real result data.
+    val engine = aiEngine
+    if (engine != null) {
+      val prompt = buildResponsePrompt(intent, toolResult, language, userInput, tone, context, memoryHint)
+      val llmReply = try {
+        withTimeout(LLM_TIMEOUT_MS) { engine.generate(prompt) }
+      } catch (e: TimeoutCancellationException) {
+        Log.w(TAG, "LLM response timed out after ${LLM_TIMEOUT_MS}ms; using fallback")
+        null
+      } catch (e: Exception) {
+        Log.w(TAG, "LLM engine threw ${e.javaClass.simpleName}: ${e.message}; using fallback")
+        null
+      }
+      if (!llmReply.isNullOrBlank()) {
+        Log.i(TAG, "LLM response ($language, tone=$tone): \"$llmReply\"")
+        return llmReply
+      }
+      Log.w(TAG, "LLM returned null/blank; falling back to deterministic response")
     }
 
-    // ============================================================
-    // ENGLISH
-    // ============================================================
+    // 4. Fallback path (no engine, missing key, timeout, blank): a simple honest
+    // deterministic reply — the tool's own spoken text when it carries the real
+    // data, otherwise the static fallback. Never silent, never fabricated.
+    return fallbackResponse(intent, toolResult).also {
+      Log.i(TAG, "Fallback response ($language, tone=$tone): \"$it\"")
+    }
+  }
 
-    private fun generateEnglishResponse(
-        intent: DvexIntent,
-        toolResult: DvexToolResult,
-        userInput: String,
-        tone: EstimatedTone,
-        context: ConversationContext?
-    ): String {
+  // =========================================================================
+  // --- Prompt construction ---
+  // =========================================================================
 
-        if (intent is DvexIntent.LowConfidence) {
-            return generateClarification(userInput)
-        }
+  /**
+   * Builds the response-generation prompt. Contains ONLY facts D-VEX actually
+   * established: the executed action, the real tool result, the user's verbatim
+   * utterance, tone, and optional memory. The model is explicitly forbidden from
+   * inventing numbers, names, or outcomes.
+   */
+  fun buildResponsePrompt(
+    intent: DvexIntent,
+    toolResult: DvexToolResult,
+    language: DetectedLanguage,
+    userInput: String,
+    tone: EstimatedTone,
+    context: ConversationContext?,
+    memoryHint: String?
+  ): String {
+    val sb = StringBuilder()
+    sb.append(
+      "You are D-VEX, a personal voice assistant on the user's phone. " +
+        "Write the reply the assistant should say out loud next.\n\n"
+    )
+    sb.append("STRICT RULES:\n")
+    sb.append("- Reply naturally and conversationally. Usually 1-3 short sentences; use more only when the user clearly needs an explanation. No lists, no markdown, no emojis unless the user explicitly asks.\n")
+    sb.append(
+      "- Mirror the user's language, script, and natural style (Tamil script, Tanglish, English, or a mix). " +
+        "Do NOT force titles such as Sir/Madam. Use them only if the user naturally uses them.\n"
+    )
+    sb.append(
+      "- Use ONLY the facts given below. NEVER invent or change numbers, times, " +
+        "weather values, names, or outcomes. If the action failed or was not " +
+        "found, say so plainly without sugarcoating it into a success.\n"
+    )
+    sb.append("- Sound like a warm, smart human assistant, not a scripted bot. Avoid canned openings, repeated phrases, robotic acknowledgements, and unnecessary restatement of the command.\n")
+    sb.append("- If the user is casually talking rather than requesting an action, respond conversationally and naturally; do not force an action-completion style reply.\n")
+    sb.append("- Keep continuity with the previous reply and the current conversation. Do not repeat the same wording unless repetition is explicitly requested.\n\n")
 
-        if (isSimpleAcknowledgement(userInput)) {
-            return when (tone) {
-                EstimatedTone.HAPPY,
-                EstimatedTone.EXCITED ->
-                    "Anytime 😊"
-
-                else ->
-                    "Of course."
-            }
-        }
-
-        return when (tone) {
-
-            EstimatedTone.SAD -> {
-                generateSadEnglish(intent)
-            }
-
-            EstimatedTone.FRUSTRATED -> {
-                generateFrustratedEnglish(intent)
-            }
-
-            EstimatedTone.CONFUSED -> {
-                generateConfusedEnglish(intent)
-            }
-
-            EstimatedTone.EXCITED -> {
-                generateExcitedEnglish(intent)
-            }
-
-            EstimatedTone.HAPPY -> {
-                generateHappyEnglish(intent)
-            }
-
-            EstimatedTone.URGENT -> {
-                generateUrgentEnglish(
-                    intent,
-                    toolResult
-                )
-            }
-
-            else -> {
-                generateNeutralEnglish(
-                    intent,
-                    toolResult,
-                    context
-                )
-            }
-        }
+    sb.append("WHAT JUST HAPPENED: ${describeAction(intent, toolResult)}\n")
+    sb.append("RESULT: ${toolResult.status.name} — ${toolResult.message}\n")
+    if (toolResult.spokenText.isNotBlank() && toolResult.spokenText != toolResult.message) {
+      sb.append("SPOKEN DATA: ${toolResult.spokenText}\n")
+    }
+    if (userInput.isNotBlank()) {
+      sb.append("USER SAID (verbatim, mirror this language and tone): \"$userInput\"\n")
+    }
+    val toneWord = when (tone) {
+      EstimatedTone.URGENT -> "urgent — be prompt and reassuring, act like it's already being handled"
+      EstimatedTone.FRUSTRATED -> "frustrated — stay calm, acknowledge it, offer to fix it step by step"
+      EstimatedTone.SAD -> "low/sad — be gentle and supportive"
+      EstimatedTone.CONFUSED -> "confused — be extra clear and simple"
+      EstimatedTone.EXCITED -> "excited — match the energy, keep it brief"
+      EstimatedTone.HAPPY -> "happy/grateful — be warm, enjoy it with them"
+      EstimatedTone.NEUTRAL -> "neutral"
+    }
+    sb.append("USER TONE SOUNDS: $toneWord\n")
+    if (!memoryHint.isNullOrBlank()) {
+      sb.append("REMEMBERED ABOUT THE USER: $memoryHint\n")
+    }
+    context?.lastSpokenResponse?.takeIf { it.isNotBlank() }?.let {
+      sb.append("YOUR PREVIOUS REPLY (for continuity, don't repeat it): \"$it\"\n")
     }
 
-    private fun generateNeutralEnglish(
-        intent: DvexIntent,
-        toolResult: DvexToolResult,
-        context: ConversationContext?
-    ): String {
+    sb.append("\nReply now with ONLY the spoken reply text.")
+    return sb.toString()
+  }
 
-        if (toolResult.spokenText.isNotBlank()) {
-            return toolResult.spokenText
+  /** Short factual description of the executed action for the prompt. */
+  private fun describeAction(intent: DvexIntent, toolResult: DvexToolResult): String {
+    return when (intent) {
+      is DvexIntent.OpenApp -> "The user asked to open the app \"${intent.appName}\"."
+      is DvexIntent.CallContact -> "The user asked to call \"${intent.recipient}\"."
+      is DvexIntent.SendMessage ->
+        if (intent.isWhatsApp) {
+          "The user asked to send a WhatsApp message to \"${intent.recipient}\"" +
+            (intent.messageText?.let { " saying \"$it\"" } ?: "") + "."
+        } else {
+          "The user asked to send a message to \"${intent.recipient}\"" +
+            (intent.messageText?.let { " saying \"$it\"" } ?: "") + "."
         }
-
-        return when (intent) {
-
-            is DvexIntent.WakeGreeting ->
-                "Hey! I'm here. What are we doing?"
-
-            is DvexIntent.GetTime ->
-                "It's ${toolResult.spokenText}."
-
-            is DvexIntent.GetWeather ->
-                toolResult.spokenText.ifBlank {
-                    "I couldn't get the weather right now."
-                }
-
-            is DvexIntent.OpenApp ->
-                toolResult.spokenText.ifBlank {
-                    "Done."
-
-                }
-
-            is DvexIntent.CloseApp ->
-                toolResult.spokenText.ifBlank {
-                    "Done."
-                }
-
-            is DvexIntent.SearchWeb ->
-                toolResult.spokenText.ifBlank {
-                    "I've got it."
-                }
-
-            is DvexIntent.MediaControl ->
-                toolResult.spokenText.ifBlank {
-                    "Sure, playing it."
-                }
-
-            is DvexIntent.SendMessage ->
-                toolResult.spokenText.ifBlank {
-                    "Message handled."
-                }
-
-            is DvexIntent.CallContact ->
-                toolResult.spokenText.ifBlank {
-                    "Call handled."
-                }
-
-            DvexIntent.GoHome, DvexIntent.GoBack, DvexIntent.OpenRecents,
-            DvexIntent.OpenNotifications, DvexIntent.OpenSettings,
-            DvexIntent.OpenWifiSettings, DvexIntent.LockScreen ->
-                toolResult.spokenText.ifBlank {
-                    "Done."
-                }
-
-            is DvexIntent.SetAlarm, is DvexIntent.SetTimer ->
-                toolResult.spokenText.ifBlank {
-                    "Reminder set."
-                }
-
-            is DvexIntent.Conversation ->
-                "I'm right here."
-
-            else ->
-                toolResult.spokenText.ifBlank {
-                    "Done."
-                }
-        }
+      is DvexIntent.SendEmail -> "The user asked to send an email to \"${intent.recipient}\"."
+      is DvexIntent.GetWeather ->
+        "The user asked for the weather" +
+          (intent.location?.let { " in $it" } ?: "") + (if (intent.isTomorrow) " for tomorrow" else "") + "."
+      is DvexIntent.GetTime -> "The user asked for the current time."
+      is DvexIntent.Calculate -> "The user asked to calculate \"${intent.expression}\"."
+      is DvexIntent.SearchWeb -> "The user asked to search the web for \"${intent.query}\"."
+      is DvexIntent.PlayYoutubeVideo -> "The user asked to play \"${intent.query}\" on YouTube."
+      is DvexIntent.SetAlarm -> "The user asked to set an alarm."
+      is DvexIntent.SetTimer -> "The user asked to set a timer."
+      is DvexIntent.RememberFact -> "The user asked D-VEX to remember: \"${intent.fact}\"."
+      is DvexIntent.RecallMemory -> "The user asked what D-VEX remembers."
+      is DvexIntent.GetRecentApps -> "The user asked for recently used apps."
+      is DvexIntent.WakeGreeting -> "The user woke D-VEX with a greeting."
+      is DvexIntent.Conversation -> "The user said: \"${intent.statement}\"."
+      is DvexIntent.GeneralQuestion -> "The user asked: \"${intent.question}\"."
+      is DvexIntent.MultiStep -> "The user gave a two-step command (e.g. open an app and search inside it)."
+      else -> "The user made a device-control request (\"${toolResult.toolName}\")."
     }
+  }
 
-    private fun generateSadEnglish(
-        intent: DvexIntent
-    ): String {
+  // =========================================================================
+  // --- Deterministic fallback (LLM unavailable) ---
+  // =========================================================================
 
-        if (intent !is DvexIntent.Conversation) {
-            return "I'm with you. Let's handle this one step at a time."
-        }
-
-        return listOf(
-            "Hey... it's okay. You don't have to handle everything at once. I'm here with you.",
-            "I got you. Take a breath first. We'll figure it out together.",
-            "It's okay to have a rough moment. You can talk to me about it.",
-            "Hey, don't carry everything alone. I'm right here."
-        ).random()
+  /**
+   * Simple honest fallback used when the LLM path is unavailable or failed.
+   * Prefers the tool's own spoken text when it carries the real result (weather
+   * numbers, time, confirmation prompts) so real data still reaches the user;
+   * otherwise a short static line. Never fabricates.
+   */
+  private fun fallbackResponse(intent: DvexIntent, toolResult: DvexToolResult): String {
+    // Confirmation prompts and real data must pass through untouched.
+    if (toolResult.status == DvexToolStatus.CONFIRMATION_REQUIRED && !toolResult.confirmationPrompt.isNullOrBlank()) {
+      return toolResult.confirmationPrompt
     }
-
-    private fun generateFrustratedEnglish(
-        intent: DvexIntent
-    ): String {
-
-        if (intent !is DvexIntent.Conversation) {
-            return "Yeah, I get why that's frustrating. Let's fix it."
-        }
-
-        return listOf(
-            "Yeah, I get you. That sounds frustrating. Let's sort it out.",
-            "I hear you. Don't worry, we'll break it down and fix it.",
-            "Okay, okay. Let's not fight the problem. We'll solve it step by step."
-        ).random()
+    if (toolResult.spokenText.isNotBlank() && toolResult.spokenText != toolResult.message) {
+      return toolResult.spokenText
     }
-
-    private fun generateConfusedEnglish(
-        intent: DvexIntent
-    ): String {
-
-        return when (intent) {
-
-            is DvexIntent.Conversation ->
-                "No worries. Tell me which part is confusing and I'll explain it simply."
-
-            else ->
-                "Got you. I can explain that more simply."
-        }
+    return when (toolResult.status) {
+      DvexToolStatus.SUCCESS -> toolResult.spokenText.ifBlank { FALLBACK_OK }
+      DvexToolStatus.CONFIRMATION_REQUIRED -> FALLBACK_CONFIRM
+      else -> toolResult.spokenText.ifBlank { FALLBACK_TROUBLE }
     }
+  }
 
-    private fun generateExcitedEnglish(
-        intent: DvexIntent
-    ): String {
-
-        return when (intent) {
-
-            is DvexIntent.Conversation ->
-                "Haha, I like that energy 😄 What happened?"
-
-            else ->
-                "Nice! Let's go 😄"
-        }
+  /**
+   * Short, natural clarification request for uncertain speech / garbled transcription.
+   * If a candidate meaning was inferred from context, offers it back instead of
+   * inventing details; otherwise simply asks the user to repeat.
+   */
+  private fun generateClarification(language: DetectedLanguage, candidateIntent: DvexIntent?): String {
+    val candidatePhrase = candidateIntent?.let { describeIntentForClarification(it) }
+    return when (language) {
+      DetectedLanguage.TAMIL ->
+        if (candidatePhrase != null) "மன்னிக்கவும், தெளிவா கேட்கல. \"$candidatePhrase\" சொன்னீங்களா?"
+        else "மன்னிக்கவும், கொஞ்சம் தெளிவா சொல்லுங்க."
+      DetectedLanguage.TANGLISH ->
+        if (candidatePhrase != null) "Sorry, konjam clear-a kekkala. \"$candidatePhrase\" nu sonneengala?"
+        else "Sorry, konjam clear-a sollunga."
+      DetectedLanguage.ENGLISH ->
+        if (candidatePhrase != null) "Sorry, I didn't quite catch that. Did you mean \"$candidatePhrase\"?"
+        else "Sorry, I didn't quite catch that. Could you say it again?"
     }
+  }
 
-    private fun generateHappyEnglish(
-        intent: DvexIntent
-    ): String {
-
-        return when (intent) {
-
-            is DvexIntent.Conversation ->
-                "That's nice 😊 I'm glad to hear that."
-
-            else ->
-                "Nice 😊 Done."
-        }
+  /** Renders a short spoken form of an inferred intent for clarification prompts. */
+  private fun describeIntentForClarification(intent: DvexIntent): String? {
+    return when (intent) {
+      is DvexIntent.OpenApp -> "open ${intent.appName}"
+      is DvexIntent.CallContact -> "call ${intent.recipient}"
+      is DvexIntent.SendMessage -> "message ${intent.recipient}"
+      is DvexIntent.SendEmail -> "email ${intent.recipient}"
+      is DvexIntent.SearchWeb -> "search for ${intent.query}"
+      is DvexIntent.GetWeather -> "check the weather"
+      is DvexIntent.GetTime -> "check the time"
+      is DvexIntent.Calculate -> "calculate ${intent.expression}"
+      is DvexIntent.SetAlarm -> "set an alarm"
+      is DvexIntent.SetTimer -> "set a timer"
+      is DvexIntent.PlayYoutubeVideo -> "play that on YouTube"
+      is DvexIntent.ToggleFlashlight -> "toggle the flashlight"
+      else -> null
     }
-
-    private fun generateUrgentEnglish(
-        intent: DvexIntent,
-        toolResult: DvexToolResult
-    ): String {
-
-        if (toolResult.spokenText.isNotBlank()) {
-            return toolResult.spokenText
-        }
-
-        return when (intent) {
-            is DvexIntent.Conversation ->
-                "I'm here. Tell me what you need right now."
-
-            else ->
-                "Got it. Handling it now."
-        }
-    }
-
-    // ============================================================
-    // TANGLISH
-    // ============================================================
-
-    private fun generateTanglishResponse(
-        intent: DvexIntent,
-        toolResult: DvexToolResult,
-        userInput: String,
-        tone: EstimatedTone,
-        context: ConversationContext?
-    ): String {
-
-        if (intent is DvexIntent.LowConfidence) {
-            return "Konjam clear-ah sollu, naan correct-ah understand panni help panren."
-        }
-
-        if (isSimpleAcknowledgement(userInput)) {
-            return when (tone) {
-                EstimatedTone.HAPPY,
-                EstimatedTone.EXCITED ->
-                    "Anytime da 😊"
-
-                else ->
-                    "Sure da."
-            }
-        }
-
-        if (toolResult.spokenText.isNotBlank()) {
-
-            val toolText = toolResult.spokenText.trim()
-
-            if (
-                intent !is DvexIntent.Conversation &&
-                toolText.length > 2
-            ) {
-                return toolText
-            }
-        }
-
-        return when (tone) {
-
-            EstimatedTone.SAD -> {
-                listOf(
-                    "Hey... parava illa da. Ellamey orae time-la solve panna vendam. Naan iruken.",
-                    "Sari da... first konjam calm aagu. En kitta pesu, together handle pannalam.",
-                    "Nee thaniya carry panna vendam da. Naan inga iruken."
-                ).random()
-            }
-
-            EstimatedTone.FRUSTRATED -> {
-                listOf(
-                    "Puriyudhu da, semma frustrating-ah irukkum. Va, step by step fix pannalam.",
-                    "Okay da, tension aagadha. Problem-a break panni solve pannalam.",
-                    "Aama, kadupa irukkum. Namma idha kandippa sort pannalam."
-                ).random()
-            }
-
-            EstimatedTone.CONFUSED -> {
-                "Parava illa da. Enna part puriyala nu sollu, romba simple-ah explain panren."
-            }
-
-            EstimatedTone.EXCITED -> {
-                "Haha semma energy da 😄 Sollu, enna matter?"
-            }
-
-            EstimatedTone.HAPPY -> {
-                "Nice da 😊 Unakku happy-ah irukku nu kekkave nalla irukku."
-            }
-
-            EstimatedTone.URGENT -> {
-                "Okay da, got it. Ippo enna venum nu straight-ah sollu."
-            }
-
-            else -> {
-                generateNeutralTanglish(
-                    intent,
-                    toolResult,
-                    context
-                )
-            }
-        }
-    }
-
-    private fun generateNeutralTanglish(
-        intent: DvexIntent,
-        toolResult: DvexToolResult,
-        context: ConversationContext?
-    ): String {
-
-        if (toolResult.spokenText.isNotBlank()) {
-            return toolResult.spokenText
-        }
-
-        return when (intent) {
-
-            is DvexIntent.WakeGreeting ->
-                "Hey da 😄 Sollu, enna panlam?"
-
-            is DvexIntent.OpenApp ->
-                "Sure da, open panren."
-
-            is DvexIntent.CloseApp ->
-                "Done da."
-
-            is DvexIntent.SearchWeb ->
-                "Sure da, search panren."
-
-            is DvexIntent.MediaControl ->
-                "Sure da, play panren."
-
-            is DvexIntent.SendMessage ->
-                "Okay da, message handle panren."
-
-            is DvexIntent.CallContact ->
-                "Sure da, call handle panren."
-
-            DvexIntent.GoHome, DvexIntent.GoBack, DvexIntent.OpenRecents,
-            DvexIntent.OpenNotifications, DvexIntent.OpenSettings,
-            DvexIntent.OpenWifiSettings, DvexIntent.LockScreen ->
-                "Done da."
-
-            is DvexIntent.SetAlarm, is DvexIntent.SetTimer ->
-                "Okay da, reminder set panren."
-
-            is DvexIntent.GetWeather ->
-                "Weather check panren da."
-
-            is DvexIntent.GetTime ->
-                toolResult.spokenText.ifBlank {
-                    "Ippo time check panren da."
-                }
-
-            is DvexIntent.Conversation ->
-                "Hmm, sollu da. Naan kekkuren."
-
-            else ->
-                "Done da."
-        }
-    }
-
-    // ============================================================
-    // TAMIL
-    // ============================================================
-
-    private fun generateTamilResponse(
-        intent: DvexIntent,
-        toolResult: DvexToolResult,
-        userInput: String,
-        tone: EstimatedTone,
-        context: ConversationContext?
-    ): String {
-
-        if (intent is DvexIntent.LowConfidence) {
-            return "கொஞ்சம் தெளிவாக சொல்லுங்க, சரியாக புரிந்து கொண்டு உதவுறேன்."
-        }
-
-        if (isSimpleAcknowledgement(userInput)) {
-            return "எப்போதும் இருக்கேன் 😊"
-        }
-
-        if (toolResult.spokenText.isNotBlank()) {
-            return toolResult.spokenText
-        }
-
-        return when (tone) {
-
-            EstimatedTone.SAD -> {
-                listOf(
-                    "பரவாயில்லை... எல்லாத்தையும் ஒரே நேரத்தில் சமாளிக்க வேண்டியதில்லை. நான் இருக்கேன்.",
-                    "கொஞ்சம் அமைதியாக இருங்க. என்ன நடந்தது என்று என்னிடம் சொல்லலாம்.",
-                    "நீங்க இதை தனியாக சமாளிக்க வேண்டியதில்லை. நான் உங்களுடன் இருக்கேன்."
-                ).random()
-            }
-
-            EstimatedTone.FRUSTRATED -> {
-                listOf(
-                    "புரிகிறது. அது எரிச்சலாகத்தான் இருக்கும். வாங்க, ஒவ்வொன்றாக சரி பண்ணலாம்.",
-                    "கவலைப்படாதீங்க. பிரச்சனையை சின்ன சின்ன பகுதிகளாக பிரித்து சரி பண்ணலாம்.",
-                    "சரி, முதலில் அமைதியாக இருப்போம். அடுத்து என்ன செய்யலாம் என்று பார்க்கலாம்."
-                ).random()
-            }
-
-            EstimatedTone.CONFUSED -> {
-                "பரவாயில்லை. எந்த பகுதி புரியவில்லை என்று சொல்லுங்க, எளிமையாக விளக்குறேன்."
-            }
-
-            EstimatedTone.EXCITED -> {
-                "ஹாஹா 😄 அந்த energy நல்லா இருக்கு! என்ன விஷயம்?"
-            }
-
-            EstimatedTone.HAPPY -> {
-                "அருமை 😊 நீங்கள் சந்தோஷமாக இருக்கிறீங்கன்னு கேட்கவே நல்லா இருக்கு."
-            }
-
-            EstimatedTone.URGENT -> {
-                "சரி. இப்போ உங்களுக்கு என்ன தேவைன்னு நேராக சொல்லுங்க."
-            }
-
-            else -> {
-                generateNeutralTamil(
-                    intent,
-                    toolResult,
-                    context
-                )
-            }
-        }
-    }
-
-    private fun generateNeutralTamil(
-        intent: DvexIntent,
-        toolResult: DvexToolResult,
-        context: ConversationContext?
-    ): String {
-
-        if (toolResult.spokenText.isNotBlank()) {
-            return toolResult.spokenText
-        }
-
-        return when (intent) {
-
-            is DvexIntent.WakeGreeting ->
-                "வணக்கம் 😊 சொல்லுங்க, என்ன செய்யலாம்?"
-
-            is DvexIntent.OpenApp ->
-                "சரி, திறக்கிறேன்."
-
-            is DvexIntent.CloseApp ->
-                "சரி, முடிந்தது."
-
-            is DvexIntent.SearchWeb ->
-                "சரி, தேடுகிறேன்."
-
-            is DvexIntent.MediaControl ->
-                "சரி, பாடலை இயக்குகிறேன்."
-
-            is DvexIntent.SendMessage ->
-                "சரி, மெசேஜை அனுப்புகிறேன்."
-
-            is DvexIntent.CallContact ->
-                "சரி, அழைப்பை செய்கிறேன்."
-
-            DvexIntent.GoHome, DvexIntent.GoBack, DvexIntent.OpenRecents,
-            DvexIntent.OpenNotifications, DvexIntent.OpenSettings,
-            DvexIntent.OpenWifiSettings, DvexIntent.LockScreen ->
-                "சரி, முடிந்தது."
-
-            is DvexIntent.SetAlarm, is DvexIntent.SetTimer ->
-                "சரி, நினைவூட்டலை அமைக்கிறேன்."
-
-            is DvexIntent.GetWeather ->
-                "வானிலை தகவலை பார்க்கிறேன்."
-
-            is DvexIntent.GetTime ->
-                toolResult.spokenText.ifBlank {
-                    "நேரத்தை பார்க்கிறேன்."
-                }
-
-            is DvexIntent.Conversation ->
-                "சொல்லுங்க, நான் கேட்கிறேன்."
-
-            else ->
-                "சரி, முடிந்தது."
-        }
-    }
-
-    // ============================================================
-    // HELPERS
-    // ============================================================
-
-    private fun isRepeatRequest(input: String): Boolean {
-
-        val text = input
-            .lowercase(Locale.getDefault())
-            .trim()
-
-        val phrases = listOf(
-            "repeat",
-            "say again",
-            "again",
-            "what did you say",
-            "once more",
-            "thirumba sollu",
-            "thirumba sollunga",
-            "marubadi sollu",
-            "marubadi sollunga",
-            "திரும்ப சொல்லு",
-            "மறுபடியும் சொல்லு"
-        )
-
-        return containsAny(text, phrases)
-    }
-
-    private fun isSimpleAcknowledgement(input: String): Boolean {
-
-        val text = input
-            .lowercase(Locale.getDefault())
-            .trim()
-
-        val phrases = listOf(
-            "thanks",
-            "thank you",
-            "thankyou",
-            "ok",
-            "okay",
-            "cool",
-            "nice",
-            "great",
-            "good",
-            "super",
-            "nandri",
-            "seri",
-            "sari",
-            "correct",
-            "semma",
-            "சரி",
-            "நன்றி",
-            "அருமை"
-        )
-
-        return phrases.any {
-            text == it || text.contains(it)
-        }
-    }
-
-    private fun isGreeting(input: String): Boolean {
-
-        val text = input
-            .lowercase(Locale.getDefault())
-            .trim()
-
-        val greetings = listOf(
-            "hi",
-            "hello",
-            "hey",
-            "hey dvex",
-            "hi dvex",
-            "hello dvex",
-            "good morning",
-            "good afternoon",
-            "good evening",
-            "vanakkam",
-            "வணக்கம்"
-        )
-
-        return greetings.any {
-            text == it || text.startsWith("$it ")
-        }
-    }
-
-    private fun containsName(
-        response: String,
-        name: String
-    ): Boolean {
-
-        return response
-            .lowercase(Locale.getDefault())
-            .contains(
-                name.lowercase(Locale.getDefault())
-            )
-    }
-
-    private fun containsAny(
-        text: String,
-        words: List<String>
-    ): Boolean {
-
-        return words.any { word ->
-            text.contains(word)
-        }
-    }
-
-    private fun generateClarification(
-        userInput: String
-    ): String {
-
-        if (userInput.isBlank()) {
-            return "Sorry, I didn't catch that. Say it again?"
-        }
-
-        return when {
-            userInput.length < 5 ->
-                "I didn't quite catch that. Can you say a little more?"
-
-            else ->
-                "I got part of that, but I'm not fully sure. Can you rephrase it?"
-        }
-    }
-
-    private fun describeIntentForClarification(
-        intent: DvexIntent
-    ): String {
-
-        return when (intent) {
-
-            is DvexIntent.OpenApp ->
-                "opening an app"
-
-            is DvexIntent.CloseApp ->
-                "closing an app"
-
-            is DvexIntent.SearchWeb ->
-                "searching the web"
-
-            is DvexIntent.MediaControl ->
-                "playing music"
-
-            is DvexIntent.SendMessage ->
-                "sending a message"
-
-            is DvexIntent.CallContact ->
-                "making a call"
-
-            is DvexIntent.GetWeather ->
-                "checking the weather"
-
-            is DvexIntent.SetAlarm, is DvexIntent.SetTimer ->
-                "setting a reminder"
-
-            DvexIntent.GoHome, DvexIntent.GoBack, DvexIntent.OpenRecents,
-            DvexIntent.OpenNotifications, DvexIntent.OpenSettings,
-            DvexIntent.OpenWifiSettings, DvexIntent.LockScreen ->
-                "controlling the device"
-
-            else ->
-                "doing that"
-        }
-    }
+  }
+
+  companion object {
+    private const val TAG = "[D-VEX][RESPONSE]"
+    private const val LLM_TIMEOUT_MS = 8_000L
+
+    const val FALLBACK_OK = "Done."
+    const val FALLBACK_CONFIRM = "Shall I go ahead?"
+    const val FALLBACK_TROUBLE = "Sorry, I'm having trouble responding right now."
+  }
 }
