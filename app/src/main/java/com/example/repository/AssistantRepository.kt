@@ -21,6 +21,8 @@ import com.example.model.DvexSettings
 import com.example.permissions.DvexPermissionManager
 import com.example.voice.SpeechRecognizerManager
 import com.example.voice.TextToSpeechManager
+import com.example.voice.VoiceSessionStateMachine
+import com.example.voice.VoiceSessionStateMachine.CommandEndReason
 import com.example.voice.WakeWordManager
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -59,11 +61,21 @@ class AssistantRepository private constructor(private val context: Context) {
   private val _latestTranscript = MutableStateFlow("")
   val latestTranscript: StateFlow<String> = _latestTranscript.asStateFlow()
 
-  private val _latestResponse = MutableStateFlow("Yes Sir, D-VEX ready.")
+  private val _latestResponse = MutableStateFlow("D-VEX ready.")
   val latestResponse: StateFlow<String> = _latestResponse.asStateFlow()
 
   private val _pendingConfirmation = MutableStateFlow<PendingConfirmation?>(null)
   val pendingConfirmation: StateFlow<PendingConfirmation?> = _pendingConfirmation.asStateFlow()
+
+  /**
+   * Voice session lifecycle (wake -> command -> standby) with duplicate protection.
+   * Exactly one wake session and one command listen window may exist at a time;
+   * wake-word detection resumes only after the command session fully ends.
+   */
+  private val voiceSession = VoiceSessionStateMachine()
+
+  /** Timestamp of the last spoken wake-confirmation, used to bound echo suppression. */
+  @Volatile private var lastConfirmationSpokenAtMs = 0L
 
   // Watchdog job to ensure the UI is NEVER stuck in LISTENING or PROCESSING
   private var stateWatchdogJob: Job? = null
@@ -74,6 +86,9 @@ class AssistantRepository private constructor(private val context: Context) {
       Log.i(TAG_WAKE, "Wake word detected: \"$phrase\"")
       handleWakeWordTriggered(phrase)
     }
+    // Hard gate: while a voice session is active the wake detector must never fire
+    // (belt-and-braces alongside the detector being stopped for the session).
+    wakeWordManager.setTriggerGate { !voiceSession.isSessionActive() }
   }
 
   private fun loadSettings(): DvexSettings {
@@ -155,10 +170,16 @@ class AssistantRepository private constructor(private val context: Context) {
       return
     }
     if (_settings.value.wakeWordEnabled) {
+      // Never arm wake detection while a voice session is mid-flight.
+      if (voiceSession.isSessionActive()) {
+        Log.d(TAG_WAKE, "Voice session active; refusing to start wake detection mid-session")
+        return
+      }
       if (wakeWordManager.isRunning()) {
         Log.d(TAG_WAKE, "Wake-word manager already active; skipping duplicate start")
         return
       }
+      voiceSession.enterStandby()
       _assistantState.value = DvexAssistantState.WakeWordListening
       wakeWordManager.start()
     } else {
@@ -168,16 +189,26 @@ class AssistantRepository private constructor(private val context: Context) {
 
   fun handleWakeWordTriggered(detectedPhrase: String = "D-VEX") {
     scope.launch {
-      Log.i(TAG_WAKE, "Handling wake word activation triggered: \"$detectedPhrase\"")
+      // DUPLICATE PROTECTION: accept the wake trigger exactly once per session.
+      // Late echoes / double callbacks from the detector are dropped here and by
+      // the detector-level trigger gate, so only ONE wake session is ever created.
+      val sessionId = voiceSession.onWakeDetected(detectedPhrase)
+      if (sessionId == null) {
+        Log.i(TAG_WAKE, "Duplicate/late wake trigger ignored (session already active): \"$detectedPhrase\"")
+        return@launch
+      }
+      Log.i(TAG_WAKE, "Wake session $sessionId created for: \"$detectedPhrase\"")
+
       // Audio safety: Stop wake word detector before starting command recognition
       wakeWordManager.stop()
       ttsManager.stop()
       triggerTacticalHaptic()
 
-      val confirmationText = "Yes, Sir. சொல்லுங்க."
+      val confirmationText = "சொல்லுங்க."
       _latestResponse.value = confirmationText
       _assistantState.value = DvexAssistantState.Speaking(confirmationText)
       _latestTranscript.value = ""
+      lastConfirmationSpokenAtMs = System.currentTimeMillis()
 
       wakeWordManager.setAudioSuppressed(true)
       wakeWordManager.setRecentTtsUtterance(confirmationText)
@@ -186,13 +217,19 @@ class AssistantRepository private constructor(private val context: Context) {
       val attachedCommand = extractAttachedCommand(detectedPhrase)
       if (attachedCommand.isNotBlank()) {
         Log.i(TAG_WAKE, "Detected attached voice command in wake trigger: \"$attachedCommand\"")
+        // Attached commands skip the listen window; transition the session once so
+        // processCommand's exactly-once gate accepts it. TTS callback OR timeout —
+        // whichever lands first — executes it exactly once (idempotent latch below).
+        voiceSession.onCommandListeningStarted()
         var actionExecuted = false
         val executeAttached = {
           if (!actionExecuted) {
             actionExecuted = true
-            scope.launch {
-              delay(150)
-              processCommand(attachedCommand)
+            if (voiceSession.markCommandProcessing()) {
+              scope.launch {
+                delay(150)
+                processCommand(attachedCommand)
+              }
             }
           }
         }
@@ -252,6 +289,22 @@ class AssistantRepository private constructor(private val context: Context) {
   }
 
   fun startListeningForCommand(preferredLanguage: String? = null) {
+    // SESSION GATE: command listening may start exactly once per session.
+    val sessionOpened = when {
+      voiceSession.isAwaitingCommand() -> voiceSession.onCommandListeningStarted() != null
+      // Confirmation re-listen or explicit TTS interruption (orb tap) within the
+      // SAME session: one new window, gated by the previous session state.
+      voiceSession.isProcessingCommand() -> voiceSession.onCommandRelistenRequested() != null
+      voiceSession.isListeningWindowOpen() -> true
+      // Manual entry (orb tap / HUD mic) only when no session is active.
+      voiceSession.canStartCommandWithoutWake() -> voiceSession.onManualCommandRequested() != null
+      else -> false
+    }
+    if (!sessionOpened) {
+      Log.w(TAG_STT, "Command listening refused: voice session already active (${voiceSession.snapshot().state})")
+      return
+    }
+
     // Interruption handling: Stop any active speech immediately
     ttsManager.stop()
 
@@ -279,18 +332,28 @@ class AssistantRepository private constructor(private val context: Context) {
         cancelStateWatchdog()
         val clean = recognizedText.trim()
         if (clean.isBlank()) {
-          Log.i(TAG_STT, "Empty recognized text; silently returning to Standby")
-          _assistantState.value = DvexAssistantState.Standby
-          _latestTranscript.value = ""
-          returnToRestState()
+          Log.i(TAG_STT, "Empty recognized text; closing command session silently")
+          endCommandSession(CommandEndReason.SILENCE)
           return@startListening
         }
 
         val norm = clean.lowercase(Locale.ROOT)
-        // Prevent responding to self-echo from wake confirmation response
+        // Self-echo of the wake confirmation: treated as "no command" ONLY within the
+        // echo window right after the confirmation was spoken. A genuine "yes sir"
+        // confirmation later in the session is processed normally.
         if (norm == "yes sir" || norm.contains("சொல்லுங்க") || norm.contains("sollunga") || norm == "yes sir சொல்லுங்க" || norm == "yes, sir.") {
-          Log.d(TAG_STT, "Ignored self-echo from confirmation response: $clean")
-          startListeningForCommand(preferredLanguage)
+          val sinceConfirmation = System.currentTimeMillis() - lastConfirmationSpokenAtMs
+          if (sinceConfirmation < 3000) {
+            Log.d(TAG_STT, "Self-echo of confirmation treated as no-command; closing session")
+            endCommandSession(CommandEndReason.SILENCE)
+            return@startListening
+          }
+          Log.d(TAG_STT, "Confirmation-like phrase outside echo window; processing normally")
+        }
+
+        // Exactly-once command processing: duplicate onResults for this session are ignored.
+        if (!voiceSession.markCommandProcessing()) {
+          Log.w(TAG_STT, "Duplicate command result ignored (session not in listening state)")
           return@startListening
         }
         _latestTranscript.value = clean
@@ -299,6 +362,7 @@ class AssistantRepository private constructor(private val context: Context) {
       onError = { error ->
         cancelStateWatchdog()
         Log.w(TAG_STT, "SpeechRecognizer returned error: $error")
+        // Close the command session exactly once; duplicate error callbacks are dropped.
         val isSilenceOrEmpty = error == "EMPTY_SPEECH" ||
             error.contains("timed out", ignoreCase = true) ||
             error.contains("No speech", ignoreCase = true) ||
@@ -306,6 +370,11 @@ class AssistantRepository private constructor(private val context: Context) {
             error.contains("No clear command", ignoreCase = true) ||
             error.contains("Client error", ignoreCase = true) ||
             error.contains("empty", ignoreCase = true)
+
+        if (!endCommandSession(if (isSilenceOrEmpty) CommandEndReason.SILENCE else CommandEndReason.ERROR)) {
+          Log.w(TAG_STT, "Duplicate command error callback ignored (session already closed)")
+          return@startListening
+        }
 
         if (isSilenceOrEmpty) {
           // Empty/no speech -> silently return to STANDBY without sending to brain or saying anything
@@ -335,7 +404,11 @@ class AssistantRepository private constructor(private val context: Context) {
 
   fun stopListening() {
     cancelStateWatchdog()
+    // User-initiated stop is an authority: force-close any active session so the
+    // pipeline can never be wedged out of STANDBY, then fully release the recognizer.
+    forceEndVoiceSession()
     speechRecognizer.stopListening()
+    speechRecognizer.destroy()
     returnToRestState()
   }
 
@@ -345,10 +418,24 @@ class AssistantRepository private constructor(private val context: Context) {
       Log.i(TAG_AI, "Ignoring blank command; silently returning to Standby")
       _assistantState.value = DvexAssistantState.Standby
       _latestTranscript.value = ""
+      endCommandSession(CommandEndReason.SILENCE)
       returnToRestState()
       return
     }
 
+    // Exactly-once processing per session.
+    // Voice path: the wake/session machinery transitions to PROCESSING_COMMAND
+    // before calling this. Typed HUD path: no mic session exists, so open the
+    // manual session here (only when the session is at rest — same entry the
+    // orb tap uses) and mark it processing — identical exactly-once guarantees,
+    // no duplicate command system.
+    if (!voiceSession.isProcessingCommand() && !voiceSession.isListeningWindowOpen()) {
+      if (voiceSession.onManualCommandRequested() == null) {
+        Log.w(TAG_AI, "Command rejected: voice session busy (state=${voiceSession.snapshot().state})")
+        return
+      }
+    }
+    voiceSession.markCommandProcessing()
     scope.launch {
       cancelStateWatchdog()
       _assistantState.value = DvexAssistantState.Processing
@@ -723,28 +810,28 @@ class AssistantRepository private constructor(private val context: Context) {
       return ToolExecutionResult(
         status = ToolResultStatus.SUCCESS,
         toolName = "greeting",
-        message = "வணக்கம், Sir! சொல்லுங்க, என்ன பண்ணனும்?"
+        message = "வணக்கம்! சொல்லுங்க, என்ன பண்ணலாம்?"
       )
     }
     if (q.contains("epdi irukka") || q.contains("how are you")) {
       return ToolExecutionResult(
         status = ToolResultStatus.SUCCESS,
         toolName = "greeting",
-        message = "நான் நல்லா இருக்கேன், Sir. சொல்லுங்க, என்ன வேணும்?"
+        message = "நான் நல்லா இருக்கேன். சொல்லுங்க, என்ன வேணும்?"
       )
     }
     if (q.contains("who are you") || q.contains("what is d-vex") || q.contains("your name") || q.contains("yaar nee")) {
       return ToolExecutionResult(
         status = ToolResultStatus.SUCCESS,
         toolName = "identity",
-        message = "I am D-VEX, your tactical AI assistant, Sir."
+        message = "I'm D-VEX, your personal AI assistant."
       )
     }
     if (q.contains("status") || q.contains("diagnostics") || q.contains("system")) {
       return ToolExecutionResult(
         status = ToolResultStatus.SUCCESS,
         toolName = "system_status",
-        message = "All systems operational, Sir. Standing by."
+        message = "All systems are operational. என்ன பண்ணலாம்?"
       )
     }
 
@@ -753,7 +840,7 @@ class AssistantRepository private constructor(private val context: Context) {
     return ToolExecutionResult(
       status = ToolResultStatus.SUCCESS,
       toolName = "conversation",
-      message = "Got it, Sir. Standing by."
+      message = "சரி, சொல்லுங்க. என்ன பண்ணலாம்?"
     )
   }
 
@@ -781,7 +868,7 @@ class AssistantRepository private constructor(private val context: Context) {
   fun cancelPendingAction() {
     _pendingConfirmation.value = null
     smartBrain.cancelPendingConfirmation()
-    respondWith("Action cancelled, Sir.")
+    respondWith("Action cancelled.")
   }
 
   private fun respondWith(text: String, language: com.example.brain.DetectedLanguage? = null) {
@@ -799,11 +886,25 @@ class AssistantRepository private constructor(private val context: Context) {
         Log.i(TAG_VOICE, "TTS finished; checking confirmation or returning to rest")
         wakeWordManager.setAudioSuppressed(false)
         if (_pendingConfirmation.value != null) {
-          scope.launch {
-            delay(150)
-            startListeningForCommand()
+          // Bounded yes/no re-listen INSIDE the same session (one window at a time).
+          val relistenId = voiceSession.onCommandRelistenRequested()
+          if (relistenId != null) {
+            scope.launch {
+              delay(150)
+              startListeningForCommand()
+            }
+          } else {
+            Log.w(TAG_VOICE, "Confirmation re-listen refused by session state; ending session")
+            voiceSession.endSessionAfterResponse()
+            returnToRestState()
           }
         } else {
+          // Session fully ends ONLY here — wake detection resumes afterwards.
+          if (!voiceSession.endSessionAfterResponse()) {
+            // Not in PROCESSING (e.g. cancelled from a re-listen window): force-close
+            // so wake detection can always resume. Idempotent per session.
+            voiceSession.forceEndSession()
+          }
           returnToRestState()
         }
       }
@@ -812,24 +913,66 @@ class AssistantRepository private constructor(private val context: Context) {
       scope.launch {
         delay(2200)
         if (_pendingConfirmation.value != null) {
-          startListeningForCommand()
+          if (voiceSession.onCommandRelistenRequested() != null) {
+            startListeningForCommand()
+          } else {
+            voiceSession.forceEndSession()
+            returnToRestState()
+          }
         } else {
+          if (!voiceSession.endSessionAfterResponse()) {
+            voiceSession.forceEndSession()
+          }
           returnToRestState()
         }
       }
     }
   }
 
+  /**
+   * Voice-session-end authority: closes the command phase exactly once per session
+   * (duplicate result/error/timeout callbacks return false) and, when no response
+   * will follow (silence/timeout/stop), ends the session so wake detection may resume.
+   */
+  private fun endCommandSession(reason: CommandEndReason): Boolean {
+    val closed = voiceSession.onCommandFinished(reason)
+    if (closed && reason == CommandEndReason.RESULT) {
+      // A real command was accepted: the session stays open until the brain's
+      // response finishes (respondWith -> endSessionAfterResponse).
+      return true
+    }
+    if (closed) {
+      // Silence / error / timeout / stop: no action taken, end the whole session now.
+      voiceSession.endSessionAfterResponse()
+    }
+    return closed
+  }
+
+  /**
+   * Watchdog authority: force-closes a wedged session from any active state when
+   * the pipeline is stuck (processing never produced a response, etc.).
+   */
+  private fun forceEndVoiceSession(): Boolean {
+    return voiceSession.forceEndSession()
+  }
+
   fun returnToRestState() {
     cancelStateWatchdog()
     _assistantState.value = DvexAssistantState.Standby
     if (_settings.value.wakeWordEnabled && DvexPermissionManager.hasAudioPermission(context)) {
+      // Defer wake re-arm ONLY while a wake/command session is genuinely mid-flight;
+      // once the session has ended (RETURNING_TO_STANDBY) or none exists, re-arm below.
+      if (voiceSession.isSessionActive()) {
+        Log.i(TAG_VOICE, "Standby UI state set; wake re-arm deferred (session still open)")
+        return
+      }
       Log.i(TAG_VOICE, "Returned to standby (passive wake-word listening re-arming)")
       scope.launch {
         delay(400)
         wakeWordManager.setAudioSuppressed(false)
-        if (!wakeWordManager.isRunning()) {
+        if (!wakeWordManager.isRunning() && !voiceSession.isSessionActive()) {
           wakeWordManager.start()
+          voiceSession.wakeResumed()
         }
       }
     } else {
@@ -844,7 +987,11 @@ class AssistantRepository private constructor(private val context: Context) {
       delay(timeoutMs)
       Log.w(TAG_VOICE, "State watchdog tripped: $reason. Auto-recovering to Standby.")
       try {
+        // Watchdog is the authority: force-close the wedged session from any state
+        // so a hung recognizer can never keep the pipeline out of STANDBY.
+        forceEndVoiceSession()
         speechRecognizer.stopListening()
+        speechRecognizer.destroy()
       } catch (e: Exception) {
         Log.d(TAG_VOICE, "Error stopping recognizer on watchdog", e)
       }
