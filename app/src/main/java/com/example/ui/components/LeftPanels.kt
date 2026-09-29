@@ -1,5 +1,8 @@
 package com.example.ui.components
 
+import android.Manifest
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
@@ -9,6 +12,7 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -30,11 +34,17 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.PathEffect
@@ -45,9 +55,13 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.viewinterop.AndroidView
+import androidx.camera.view.PreviewView
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.example.model.NotificationItem
 import com.example.model.SystemVitals
 import com.example.model.WeatherInfo
+import com.example.permissions.DvexPermissionManager
 import com.example.ui.theme.DvexBlack
 import com.example.ui.theme.DvexBorderMuted
 import com.example.ui.theme.DvexBorderRed
@@ -58,11 +72,17 @@ import com.example.ui.theme.DvexNeonRedSubtle
 import com.example.ui.theme.DvexSurfaceCard
 import com.example.ui.theme.DvexSurfaceDark
 import com.example.ui.theme.DvexTextMuted
+import com.example.vision.DvexVisionManager
 import com.example.ui.theme.DvexTextPrimary
 import com.example.ui.theme.DvexTextSecondary
 
 /**
- * 1. WEATHER PANEL
+ * 1. WEATHER PANEL — honest live/standby states (Bug regression fix).
+ *
+ * Previously always rendered the fabricated WeatherInfo defaults ("30°C / CHENNAI /
+ * PARTLY CLOUDY") under a "DEMO FEED" tag — the panel could never show real data.
+ * Now: real fetched values when [WeatherInfo.hasData], an explicit STANDBY state
+ * otherwise. Never shows demo data as real.
  */
 @Composable
 fun WeatherPanel(
@@ -71,9 +91,44 @@ fun WeatherPanel(
 ) {
   TacticalPanel(
     title = "Weather Telemetry",
-    headerTag = "DEMO FEED",
+    headerTag = if (weather.hasData) "LIVE FEED" else "STANDBY",
     modifier = modifier
   ) {
+    if (!weather.hasData) {
+      // Honest standby: no fabricated temperature/city, guidance to fetch live data.
+      Row(
+        modifier = Modifier
+          .fillMaxWidth()
+          .padding(10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.SpaceBetween
+      ) {
+        Column {
+          Text(
+            text = "NO LIVE TELEMETRY",
+            fontFamily = FontFamily.Monospace,
+            fontSize = 9.sp,
+            fontWeight = FontWeight.Bold,
+            letterSpacing = 1.sp,
+            color = DvexTextMuted
+          )
+          Spacer(modifier = Modifier.height(4.dp))
+          Text(
+            text = "Say \"weather\" to scan your area — or ask \"weather in Chennai\".",
+            fontFamily = FontFamily.Monospace,
+            fontSize = 8.sp,
+            color = DvexTextMuted
+          )
+        }
+
+        Icon(
+          imageVector = Icons.Filled.CloudQueue,
+          contentDescription = null,
+          tint = DvexBorderMuted,
+          modifier = Modifier.size(36.dp)
+        )
+      }
+    } else {
     Row(
       modifier = Modifier
         .fillMaxWidth()
@@ -90,7 +145,7 @@ fun WeatherPanel(
           color = DvexNeonRedBright
         )
         Text(
-          text = weather.condition,
+          text = weather.condition.uppercase(),
           fontFamily = FontFamily.Monospace,
           fontSize = 9.sp,
           fontWeight = FontWeight.Bold,
@@ -112,61 +167,138 @@ fun WeatherPanel(
         modifier = Modifier.size(36.dp)
       )
     }
+    }
   }
 }
 
 /**
- * 2. NOTIFICATIONS PANEL
+ * 2. NOTIFICATIONS PANEL (Bug 5: real data or honest states — never placeholders)
+ *
+ * Data source: DvexNotificationListenerService's captured-notification StateFlow,
+ * collected into uiState.notifications by AssistantViewModel. When the listener is
+ * not enabled there is NO data, so the panel says so and deep-links to the Settings
+ * "Notification access" screen. Demo data is never shown here.
  */
 @Composable
 fun NotificationPanel(
   notifications: List<NotificationItem>,
   modifier: Modifier = Modifier
 ) {
+  val context = LocalContext.current
+
+  // Re-check listener enablement when returning from the Settings deep-link.
+  var listenerCheckTick by remember { mutableStateOf(0) }
+  val lifecycleOwner = LocalLifecycleOwner.current
+  DisposableEffect(lifecycleOwner) {
+    val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+      if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) listenerCheckTick++
+    }
+    lifecycleOwner.lifecycle.addObserver(observer)
+    onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+  }
+
+  val listenerEnabled = remember(listenerCheckTick) {
+    DvexPermissionManager.isNotificationListenerEnabled(context)
+  }
+
   TacticalPanel(
     title = "System Alerts",
-    headerTag = "${notifications.size} LOGS",
+    headerTag = when {
+      !listenerEnabled -> "ACCESS REQUIRED"
+      notifications.isEmpty() -> "0 LOGS"
+      else -> "${notifications.size} LIVE"
+    },
     modifier = modifier
   ) {
-    Column(
-      modifier = Modifier
-        .fillMaxWidth()
-        .padding(8.dp)
-    ) {
-      notifications.take(4).forEach { item ->
-        Row(
+    when {
+      !listenerEnabled -> {
+        // Honest permission-required state; tapping opens Notification access settings.
+        Column(
           modifier = Modifier
             .fillMaxWidth()
-            .padding(vertical = 3.dp),
-          verticalAlignment = Alignment.CenterVertically
+            .clickable {
+              context.startActivity(
+                DvexPermissionManager.createNotificationListenerSettingsIntent()
+              )
+            }
+            .padding(10.dp)
         ) {
-          Box(
-            modifier = Modifier
-              .size(4.dp)
-              .background(DvexNeonRed)
-          )
-          Spacer(modifier = Modifier.width(6.dp))
-          Column(modifier = Modifier.weight(1f)) {
-            Text(
-              text = item.title,
-              fontFamily = FontFamily.Monospace,
-              fontSize = 9.sp,
-              fontWeight = FontWeight.Medium,
-              color = DvexTextPrimary
-            )
-            Text(
-              text = item.subtitle,
-              fontFamily = FontFamily.Monospace,
-              fontSize = 8.sp,
-              color = DvexTextMuted
-            )
-          }
           Text(
-            text = item.timestamp,
+            text = "NOTIFICATION ACCESS REQUIRED",
             fontFamily = FontFamily.Monospace,
-            fontSize = 7.sp,
-            color = DvexNeonRedDim
+            fontSize = 9.sp,
+            fontWeight = FontWeight.Bold,
+            letterSpacing = 1.sp,
+            color = DvexNeonRedBright
           )
+          Spacer(modifier = Modifier.height(4.dp))
+          Text(
+            text = "Enable D-VEX in Settings > Notification access to display real device alerts here.",
+            fontFamily = FontFamily.Monospace,
+            fontSize = 8.sp,
+            color = DvexTextMuted
+          )
+        }
+      }
+      notifications.isEmpty() -> {
+        // Listener live, shade genuinely empty: honest empty state.
+        Column(
+          modifier = Modifier
+            .fillMaxWidth()
+            .padding(10.dp)
+        ) {
+          Text(
+            text = "NO ACTIVE ALERTS",
+            fontFamily = FontFamily.Monospace,
+            fontSize = 9.sp,
+            fontWeight = FontWeight.Bold,
+            letterSpacing = 1.sp,
+            color = DvexTextMuted
+          )
+        }
+      }
+      else -> {
+        Column(
+          modifier = Modifier
+            .fillMaxWidth()
+            .padding(8.dp)
+        ) {
+          notifications.take(4).forEach { item ->
+            Row(
+              modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = 3.dp),
+              verticalAlignment = Alignment.CenterVertically
+            ) {
+              Box(
+                modifier = Modifier
+                  .size(4.dp)
+                  .background(DvexNeonRed)
+              )
+              Spacer(modifier = Modifier.width(6.dp))
+              Column(modifier = Modifier.weight(1f)) {
+                Text(
+                  text = item.title,
+                  fontFamily = FontFamily.Monospace,
+                  fontSize = 9.sp,
+                  fontWeight = FontWeight.Medium,
+                  color = DvexTextPrimary
+                )
+                Text(
+                  text = item.subtitle,
+                  fontFamily = FontFamily.Monospace,
+                  fontSize = 8.sp,
+                  color = DvexTextMuted
+                )
+              }
+              Text(
+                text = item.timestamp,
+                fontFamily = FontFamily.Monospace,
+                fontSize = 7.sp,
+                color = DvexNeonRedDim
+              )
+            }
+          }
         }
       }
     }
@@ -365,13 +497,23 @@ fun MemoryCorePanel(
 
 /**
  * 5. CAMERA VISION PANEL
- * Placeholder visual panel with HUD reticle, corner brackets, and scan line.
+ * Live camera feed (Phase 1) with HUD reticle, corner brackets, and scan line on top.
+ * Shows an explicit "CAMERA PERMISSION REQUIRED" state when access is denied.
  */
 @Composable
 fun CameraVisionPanel(
   modifier: Modifier = Modifier,
+  cameraPermissionOverride: Boolean? = null,
+  /**
+   * Explicit vision-request state from the Power Mode VISION control (VisionRequestGate).
+   * Defaults to false so every existing call site keeps compiling. The panel stays
+   * honest: the feed is only ever called LIVE when the user has actually granted the
+   * camera permission, so the labels below combine both signals.
+   */
   isVisionActive: Boolean = false
 ) {
+  val context = LocalContext.current
+  val lifecycleOwner = LocalLifecycleOwner.current
   val infiniteTransition = rememberInfiniteTransition(label = "camScan")
   val scanYPercent by infiniteTransition.animateFloat(
     initialValue = 0f,
@@ -382,10 +524,29 @@ fun CameraVisionPanel(
     ),
     label = "scanLineY"
   )
+  var cameraPermissionGranted by remember {
+    mutableStateOf(cameraPermissionOverride ?: DvexPermissionManager.hasCameraPermission(context))
+  }
+  val visionManager = remember { DvexVisionManager.getInstance(context) }
+
+  // Keep the remembered permission state in sync with the override (HUD-level wiring).
+  LaunchedEffect(cameraPermissionOverride) {
+    cameraPermissionOverride?.let { cameraPermissionGranted = it }
+  }
+
+  // In-panel permission request so the panel is self-sufficient (HUD wiring untouched).
+  val cameraPermissionLauncher = rememberLauncherForActivityResult(
+    ActivityResultContracts.RequestPermission()
+  ) { isGranted ->
+    cameraPermissionGranted = isGranted
+  }
+
+  // Vision is only "active" when the user both asked for it AND granted the camera.
+  val visionActive = isVisionActive || cameraPermissionGranted
 
   TacticalPanel(
     title = "Camera Vision",
-    headerTag = if (isVisionActive) "OPTICAL ACTIVE" else "STANDBY",
+    headerTag = if (visionActive) "OPTICAL ACTIVE" else "STANDBY",
     modifier = modifier
   ) {
     Box(
@@ -395,7 +556,54 @@ fun CameraVisionPanel(
         .background(DvexBlack),
       contentAlignment = Alignment.Center
     ) {
-      // Reticle & Scan line
+      if (cameraPermissionGranted) {
+        // Live CameraX preview behind the HUD decoration.
+        AndroidView(
+          modifier = Modifier.fillMaxSize(),
+          factory = { ctx ->
+            PreviewView(ctx).apply {
+              implementationMode = PreviewView.ImplementationMode.COMPATIBLE
+              scaleType = PreviewView.ScaleType.FILL_CENTER
+            }
+          },
+          update = { previewView ->
+            visionManager.startCamera(lifecycleOwner, previewView)
+          }
+        )
+        DisposableEffect(cameraPermissionGranted) {
+          onDispose { visionManager.stopCamera() }
+        }
+      } else {
+        // Honest, explicit permission-required state (no fake feed).
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+          Text(
+            text = "CAMERA PERMISSION REQUIRED",
+            fontFamily = FontFamily.Monospace,
+            fontSize = 9.sp,
+            fontWeight = FontWeight.Bold,
+            color = DvexNeonRedBright
+          )
+          Spacer(modifier = Modifier.height(6.dp))
+          Text(
+            text = "TAP TO ENABLE OPTICAL SENSOR",
+            fontFamily = FontFamily.Monospace,
+            fontSize = 8.sp,
+            color = DvexTextMuted,
+            modifier = Modifier
+              .clip(CutCornerShape(4.dp))
+              .border(1.dp, DvexBorderRed, CutCornerShape(4.dp))
+              .padding(horizontal = 10.dp, vertical = 4.dp)
+          )
+        }
+        // Full-area tap target to request permission.
+        Box(
+          modifier = Modifier
+            .fillMaxSize()
+            .clickable { cameraPermissionLauncher.launch(Manifest.permission.CAMERA) }
+        )
+      }
+
+      // Reticle & Scan line (rendered on top, unchanged)
       Canvas(modifier = Modifier.fillMaxSize()) {
         val w = size.width
         val h = size.height
@@ -450,14 +658,14 @@ fun CameraVisionPanel(
         horizontalArrangement = Arrangement.SpaceBetween
       ) {
         Text(
-          text = if (isVisionActive) "[ AI VISION ACTIVE ]" else "[ VISION FEED OFFLINE ]",
+          text = if (visionActive) "[ AI VISION ACTIVE ]" else "[ VISION FEED OFFLINE ]",
           fontFamily = FontFamily.Monospace,
           fontSize = 8.sp,
           fontWeight = FontWeight.Bold,
-          color = if (isVisionActive) DvexNeonRedBright else DvexTextMuted
+          color = if (visionActive) DvexNeonRedBright else DvexTextMuted
         )
         Text(
-          text = if (isVisionActive) "1.0x // OPTICAL" else "OFFLINE",
+          text = if (visionActive) "1.0x // OPTICAL" else "OFFLINE",
           fontFamily = FontFamily.Monospace,
           fontSize = 8.sp,
           color = DvexTextSecondary
@@ -465,10 +673,10 @@ fun CameraVisionPanel(
       }
 
       Text(
-        text = if (isVisionActive) "OPTICAL SENSOR ACTIVE" else "OPTICAL SENSOR STANDBY",
+        text = if (visionActive) "OPTICAL SENSOR ACTIVE" else "OPTICAL SENSOR STANDBY",
         fontFamily = FontFamily.Monospace,
         fontSize = 8.sp,
-        color = if (isVisionActive) DvexNeonRedBright else DvexTextMuted,
+        color = if (visionActive) DvexNeonRedBright else DvexTextMuted,
         modifier = Modifier
           .align(Alignment.BottomCenter)
           .padding(bottom = 6.dp)

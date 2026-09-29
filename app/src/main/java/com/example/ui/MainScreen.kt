@@ -6,6 +6,13 @@ import com.example.model.DvexUiState
 
 /**
  * MainScreen Composable representing the primary tactical HUD with the command chat input box.
+ *
+ * Thin pass-through to [DvexHud]. It deliberately exposes ONLY the parameters the
+ * surviving HUD actually accepts: the remote 9-parameter API (isPowerMode /
+ * onTogglePowerMode / isOrbActive / onToggleOrb / onRecentApp / onNotificationAlert /
+ * onDeviceControl / onToggleVision) was never a merge conflict, but forwarding it
+ * here would not compile against the current DvexHud. Power Mode, orb, recents and
+ * device controls are reached through the existing panel-popup layer instead.
  */
 @Composable
 fun MainScreen(
@@ -17,15 +24,8 @@ fun MainScreen(
   onMicrophoneTapped: (() -> Unit)? = null,
   onQuickActionSelected: ((String) -> Unit)? = null,
   onOpenSettingsRequested: (() -> Unit)? = null,
-  isPowerMode: Boolean = false,
-  onTogglePowerMode: () -> Unit = {},
-  isOrbActive: Boolean = false,
   isVisionActive: Boolean = false,
-  onToggleOrb: () -> Unit = {},
-  onRecentApp: () -> Unit = {},
-  onNotificationAlert: () -> Unit = {},
-  onDeviceControl: () -> Unit = {},
-  onToggleVision: () -> Unit = {}
+  onVisionToggleRequested: ((Boolean) -> Unit)? = null
 ) {
   DvexHud(
     uiState = uiState,
@@ -36,14 +36,7 @@ fun MainScreen(
     onMicrophoneTapped = onMicrophoneTapped,
     onQuickActionSelected = onQuickActionSelected,
     onOpenSettingsRequested = onOpenSettingsRequested,
-    isPowerMode = isPowerMode,
-    onTogglePowerMode = onTogglePowerMode,
-    isOrbActive = isOrbActive,
     isVisionActive = isVisionActive,
-    onToggleOrb = onToggleOrb,
-    onRecentApp = onRecentApp,
-    onNotificationAlert = onNotificationAlert,
-    onDeviceControl = onDeviceControl,
-    onToggleVision = onToggleVision
+    onVisionToggleRequested = onVisionToggleRequested
   )
 }

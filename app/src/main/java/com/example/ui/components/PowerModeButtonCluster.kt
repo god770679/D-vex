@@ -1,305 +1,442 @@
 package com.example.ui.components
 
-import androidx.compose.animation.animateColorAsState
-import androidx.compose.animation.core.FastOutSlowInEasing
-import androidx.compose.animation.core.RepeatMode
-import androidx.compose.animation.core.animateFloat
-import androidx.compose.animation.core.infiniteRepeatable
-import androidx.compose.animation.core.rememberInfiniteTransition
-import androidx.compose.animation.core.tween
+import android.Manifest
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.defaultMinSize
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.CutCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Adjust
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.NotificationsActive
-import androidx.compose.material.icons.filled.PhoneAndroid
-import androidx.compose.material.icons.filled.RadioButtonChecked
 import androidx.compose.material.icons.filled.Videocam
+import androidx.compose.material.icons.filled.Widgets
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.viewinterop.AndroidView
+import androidx.camera.view.PreviewView
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import com.example.mode.VisionRequestGate
+import com.example.model.DvexSettings
+import com.example.permissions.DvexPermissionManager
 import com.example.ui.theme.DvexBlack
 import com.example.ui.theme.DvexBorderMuted
 import com.example.ui.theme.DvexBorderRed
-import com.example.ui.theme.DvexNeonRed
 import com.example.ui.theme.DvexNeonRedBright
+import com.example.ui.theme.DvexNeonRedGlow
 import com.example.ui.theme.DvexSurfaceCard
-import com.example.ui.theme.DvexSurfaceDark
 import com.example.ui.theme.DvexTextMuted
-import com.example.ui.theme.DvexTextPrimary
 import com.example.ui.theme.DvexTextSecondary
+import com.example.vision.DvexVisionManager
 
 /**
- * Tactical Power Mode Button Cluster.
- * Presents a futuristic honeycomb/pentagonal cluster of quick-action controls:
- * 1. Orb Toggle: controls DvexFloatingOrbService on/off
- * 2. Recent App: triggers recent apps view
- * 3. Notifications: triggers notification shade
- * 4. Device Control: navigation/system controls
- * 5. Vision Detection: camera toggle (explicit on/off)
+ * DUAL MODE SYSTEM: Power Mode button cluster (NEW, additive panel).
  *
- * Dimmed and inactive when in Standard Mode; fully glowing and operational in Power Mode.
+ * A separate tactical panel — it does NOT modify the internal layout architecture
+ * of DvexHud — that surfaces EXISTING D-VEX functionality through quick hexagonal
+ * controls in the black/red cyber style:
+ *
+ *  - ORB     : enable/disable DvexFloatingOrbService via the existing settings
+ *              plumbing (the service internals are untouched).
+ *  - RECENT  : opens the on-screen recent-apps overlay via [onRecentAppsRequested]
+ *              (real UsageStatsManager data rendered by RecentAppsOverlay). When no
+ *              handler is provided it falls back to routing the EXISTING voice
+ *              pipeline (IntentDetector.GetRecentApps -> DvexToolRouter
+ *              .executeGetRecentApps, the real Bug 5 usage-stats implementation).
+ *  - NOTIFY  : routes "open notifications" through the EXISTING pipeline
+ *              (DvexIntent.OpenNotifications -> DeviceControlRepository via the
+ *              accessibility service; DvexNotificationListenerService continues to
+ *              feed the existing System Alerts panel).
+ *  - DEVICE  : expands to HOME / BACK / RECENTS / NOTIFS — the existing
+ *              DeviceControlRepository navigation actions via the existing router.
+ *  - VISION  : explicit camera toggle. OFF by default and NEVER auto-started:
+ *              Power Mode activation does not touch it; only this button does
+ *              (VisionRequestGate + the existing public DvexVisionManager
+ *              startCamera/stopCamera APIs — manager internals are untouched).
+ *
+ * Behaviour:
+ *  - Active when Power Mode is ON.
+ *  - Dimmed and non-interactive when Power Mode is OFF (never interferes with
+ *    the existing HUD panels).
+ *  - All touch targets are at least 48dp and carry content descriptions.
+ *
+ * @param onSendCommand routes a command through the existing brain pipeline
+ *   (AssistantViewModel.processVoiceCommand) — no duplicated execution logic.
+ * @param onOrbToggleRequested flips the existing floatingOrbEnabled setting.
+ * @param onVisionToggleRequested optional test/seam hook: when provided, invoked
+ *   with the new vision state INSTEAD of the default camera wiring, so unit tests
+ *   can verify the VISION tap reaches the start/stop mechanism without a camera.
+ * @param onRecentAppsRequested optional hook that opens the on-screen recent-apps
+ *   overlay (real usage data); falls back to the voice pipeline when absent.
  */
 @Composable
 fun PowerModeButtonCluster(
-  isPowerMode: Boolean,
-  isOrbActive: Boolean,
-  isVisionActive: Boolean,
-  onToggleOrb: () -> Unit,
-  onRecentApp: () -> Unit,
-  onNotificationAlert: () -> Unit,
-  onDeviceControl: () -> Unit,
-  onToggleVision: () -> Unit,
-  modifier: Modifier = Modifier
+  powerModeEnabled: Boolean,
+  settings: DvexSettings,
+  onSendCommand: (String) -> Unit,
+  onOrbToggleRequested: (Boolean) -> Unit,
+  modifier: Modifier = Modifier,
+  onVisionToggleRequested: ((Boolean) -> Unit)? = null,
+  onRecentAppsRequested: (() -> Unit)? = null
 ) {
-  val clusterAlpha = if (isPowerMode) 1f else 0.4f
+  // Explicit-opt-in vision state. Baseline is always OFF (the volatile gate resets
+  // on process start); only the VISION button below ever flips it.
+  var visionOn by remember { mutableStateOf(VisionRequestGate.isVisionRequested()) }
+  var deviceControlsExpanded by remember { mutableStateOf(false) }
 
-  TacticalPanel(
-    title = "Power Core Matrix",
-    headerTag = if (isPowerMode) "ONLINE // POWER" else "STANDBY // STD",
-    modifier = modifier.testTag("power_mode_button_cluster")
+  val clusterEnabled = powerModeEnabled
+  val clusterAlpha = if (clusterEnabled) 1f else 0.35f
+
+  val context = LocalContext.current
+  val lifecycleOwner = LocalLifecycleOwner.current
+  val visionManager = remember { DvexVisionManager.getInstance(context) }
+
+  var cameraPermissionGranted by remember {
+    mutableStateOf(DvexPermissionManager.hasCameraPermission(context))
+  }
+  val cameraPermissionLauncher = rememberLauncherForActivityResult(
+    ActivityResultContracts.RequestPermission()
+  ) { isGranted ->
+    cameraPermissionGranted = isGranted
+    if (!isGranted) {
+      // Keep gate and state honest if the user denies the permission prompt.
+      VisionRequestGate.resetForTesting()
+      visionOn = false
+    }
+  }
+
+  Box(
+    modifier = modifier
+      .fillMaxWidth()
+      .alpha(clusterAlpha)
+      .semantics {
+        contentDescription = if (clusterEnabled) {
+          "Power Mode control cluster, active"
+        } else {
+          "Power Mode control cluster, disabled while Standard Mode is active"
+        }
+      }
   ) {
-    Column(
-      modifier = Modifier
-        .fillMaxWidth()
-        .background(DvexSurfaceDark)
-        .padding(horizontal = 8.dp, vertical = 8.dp)
-        .alpha(clusterAlpha),
-      horizontalAlignment = Alignment.CenterHorizontally
+    TacticalPanel(
+      title = "POWER GRID",
+      headerTag = if (clusterEnabled) "ACTIVE" else "STANDBY"
     ) {
-      if (!isPowerMode) {
-        // Mode prompt banner when in Standard Mode
-        Box(
-          modifier = Modifier
-            .fillMaxWidth()
-            .clip(CutCornerShape(4.dp))
-            .background(DvexBlack.copy(alpha = 0.6f))
-            .border(1.dp, DvexBorderMuted, CutCornerShape(4.dp))
-            .padding(vertical = 4.dp, horizontal = 8.dp),
-          contentAlignment = Alignment.Center
+      Column(
+        modifier = Modifier
+          .fillMaxWidth()
+          .padding(10.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+      ) {
+        // Honeycomb row 1: ORB / RECENT / NOTIFY
+        Row(
+          modifier = Modifier.fillMaxWidth(),
+          horizontalArrangement = Arrangement.SpaceEvenly
         ) {
-          Text(
-            text = "[ POWER MODE OFFLINE — SWITCH TO PWR IN TOP BAR ]",
-            fontFamily = FontFamily.Monospace,
-            fontSize = 8.sp,
-            fontWeight = FontWeight.Bold,
-            color = DvexTextMuted,
-            letterSpacing = 1.sp
+          PowerHexButton(
+            label = "ORB",
+            icon = Icons.Filled.Adjust,
+            active = clusterEnabled && settings.floatingOrbEnabled,
+            enabled = clusterEnabled,
+            testTag = "power_btn_orb",
+            description = "Power Mode: toggle floating orb service",
+            onClick = { onOrbToggleRequested(!settings.floatingOrbEnabled) }
+          )
+          PowerHexButton(
+            label = "RECENT",
+            icon = Icons.Filled.History,
+            active = false,
+            enabled = clusterEnabled,
+            testTag = "power_btn_recent",
+            description = "Power Mode: show recently used apps",
+            onClick = {
+              val handler = onRecentAppsRequested
+              if (handler != null) {
+                handler()
+              } else {
+                onSendCommand("recent apps")
+              }
+            }
+          )
+          PowerHexButton(
+            label = "NOTIFY",
+            icon = Icons.Filled.NotificationsActive,
+            active = false,
+            enabled = clusterEnabled,
+            testTag = "power_btn_notify",
+            description = "Power Mode: open notification shade",
+            onClick = { onSendCommand("open notifications") }
           )
         }
-        Spacer(modifier = Modifier.height(6.dp))
-      }
 
-      // Honeycomb / Pentagonal Lattice:
-      // Row 1: 3 Hexagonal Action Buttons
-      Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.SpaceEvenly,
-        verticalAlignment = Alignment.CenterVertically
-      ) {
-        HoneycombActionButton(
-          label = "ORB",
-          sublabel = if (isOrbActive) "ONLINE" else "OFF",
-          icon = Icons.Filled.RadioButtonChecked,
-          isActive = isOrbActive,
-          isEnabled = isPowerMode,
-          testTag = "power_mode_orb_btn",
-          onClick = onToggleOrb
-        )
+        // Honeycomb row 2: DEVICE / VISION
+        Row(
+          modifier = Modifier.fillMaxWidth(),
+          horizontalArrangement = Arrangement.SpaceEvenly
+        ) {
+          PowerHexButton(
+            label = "DEVICE",
+            icon = Icons.Filled.Widgets,
+            active = clusterEnabled && deviceControlsExpanded,
+            enabled = clusterEnabled,
+            testTag = "power_btn_device",
+            description = "Power Mode: expand device controls, home back recents notifications",
+            onClick = { deviceControlsExpanded = !deviceControlsExpanded }
+          )
+          PowerHexButton(
+            label = "VISION",
+            icon = Icons.Filled.Videocam,
+            active = clusterEnabled && visionOn,
+            enabled = clusterEnabled,
+            testTag = "power_btn_vision",
+            description = if (visionOn) {
+              "Power Mode: vision camera is on, tap to stop"
+            } else {
+              "Power Mode: vision camera is off, tap to start"
+            },
+            onClick = {
+              val newState = VisionRequestGate.toggleVisionRequest()
+              visionOn = newState
+              if (onVisionToggleRequested != null) {
+                onVisionToggleRequested(newState)
+              }
+            }
+          )
+        }
 
-        HoneycombActionButton(
-          label = "RECENTS",
-          sublabel = "APPS",
-          icon = Icons.Filled.History,
-          isActive = false,
-          isEnabled = isPowerMode,
-          testTag = "power_mode_recents_btn",
-          onClick = onRecentApp
-        )
+        // Expanded device controls: HOME / BACK / RECENTS / NOTIFS (existing actions).
+        if (deviceControlsExpanded && clusterEnabled) {
+          Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceEvenly
+          ) {
+            PowerMiniButton(
+              label = "HOME",
+              testTag = "power_device_home",
+              description = "Power Mode: go to home screen",
+              onClick = { onSendCommand("go home") }
+            )
+            PowerMiniButton(
+              label = "BACK",
+              testTag = "power_device_back",
+              description = "Power Mode: navigate back",
+              onClick = { onSendCommand("go back") }
+            )
+            PowerMiniButton(
+              label = "RECENTS",
+              testTag = "power_device_recents",
+              description = "Power Mode: open recent apps switcher",
+              onClick = { onSendCommand("open recents") }
+            )
+            PowerMiniButton(
+              label = "NOTIFS",
+              testTag = "power_device_notifications",
+              description = "Power Mode: open notification shade",
+              onClick = { onSendCommand("open notifications") }
+            )
+          }
+        }
 
-        HoneycombActionButton(
-          label = "ALERTS",
-          sublabel = "SHADE",
-          icon = Icons.Filled.NotificationsActive,
-          isActive = false,
-          isEnabled = isPowerMode,
-          testTag = "power_mode_notif_btn",
-          onClick = onNotificationAlert
-        )
-      }
-
-      Spacer(modifier = Modifier.height(6.dp))
-
-      // Row 2: 2 Centered Hexagonal Action Buttons (offset lattice)
-      Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.Center,
-        verticalAlignment = Alignment.CenterVertically
-      ) {
-        HoneycombActionButton(
-          label = "CONTROL",
-          sublabel = "SYSTEM",
-          icon = Icons.Filled.PhoneAndroid,
-          isActive = false,
-          isEnabled = isPowerMode,
-          testTag = "power_mode_device_btn",
-          onClick = onDeviceControl
-        )
-
-        Spacer(modifier = Modifier.width(18.dp))
-
-        HoneycombActionButton(
-          label = "VISION",
-          sublabel = if (isVisionActive) "CAM ON" else "CAM OFF",
-          icon = Icons.Filled.Videocam,
-          isActive = isVisionActive,
-          isEnabled = isPowerMode,
-          testTag = "power_mode_vision_btn",
-          onClick = onToggleVision
-        )
+        // Explicit vision preview: bound ONLY when the user tapped VISION.
+        // Uses the existing public DvexVisionManager API — no internal changes.
+        if (clusterEnabled && visionOn) {
+          if (!cameraPermissionGranted) {
+            Column(
+              modifier = Modifier
+                .fillMaxWidth()
+                .height(110.dp)
+                .background(DvexBlack)
+                .border(1.dp, DvexBorderRed, CutCornerShape(4.dp))
+                .clickable { cameraPermissionLauncher.launch(Manifest.permission.CAMERA) },
+              horizontalAlignment = Alignment.CenterHorizontally,
+              verticalArrangement = Arrangement.Center
+            ) {
+              Text(
+                text = "CAMERA PERMISSION REQUIRED",
+                fontFamily = FontFamily.Monospace,
+                fontSize = 9.sp,
+                fontWeight = FontWeight.Bold,
+                color = DvexNeonRedBright
+              )
+              Spacer(modifier = Modifier.height(4.dp))
+              Text(
+                text = "TAP TO GRANT OPTICAL ACCESS",
+                fontFamily = FontFamily.Monospace,
+                fontSize = 8.sp,
+                color = DvexTextMuted
+              )
+            }
+          } else {
+            Box(
+              modifier = Modifier
+                .fillMaxWidth()
+                .height(110.dp)
+                .background(DvexBlack)
+                .border(1.dp, DvexBorderRed, CutCornerShape(4.dp))
+            ) {
+              AndroidView(
+                modifier = Modifier.fillMaxSize(),
+                factory = { ctx ->
+                  PreviewView(ctx).apply {
+                    implementationMode = PreviewView.ImplementationMode.COMPATIBLE
+                    scaleType = PreviewView.ScaleType.FILL_CENTER
+                  }
+                },
+                update = { previewView ->
+                  visionManager.startCamera(lifecycleOwner, previewView)
+                }
+              )
+              DisposableEffect(visionOn) {
+                onDispose { visionManager.stopCamera() }
+              }
+              Text(
+                text = "[ VISION ACTIVE // OPTICAL ]",
+                fontFamily = FontFamily.Monospace,
+                fontSize = 8.sp,
+                fontWeight = FontWeight.Bold,
+                color = DvexNeonRedBright,
+                modifier = Modifier
+                  .align(Alignment.TopStart)
+                  .padding(6.dp)
+              )
+            }
+          }
+        }
       }
     }
   }
 }
 
 /**
- * Individual tactical hexagon-styled action button.
+ * One hexagonal cyber button in the cluster. Thin borders, subtle red glow when
+ * active, minimum 48dp interactive size, accessibility description.
  */
 @Composable
-private fun HoneycombActionButton(
+private fun PowerHexButton(
   label: String,
-  sublabel: String,
   icon: ImageVector,
-  isActive: Boolean,
-  isEnabled: Boolean,
+  active: Boolean,
+  enabled: Boolean,
   testTag: String,
+  description: String,
   onClick: () -> Unit
 ) {
-  val infiniteTransition = rememberInfiniteTransition(label = "btnPulse")
-  val pulseAlpha by infiniteTransition.animateFloat(
-    initialValue = 0.5f,
-    targetValue = 1f,
-    animationSpec = infiniteRepeatable(
-      animation = tween(1000, easing = FastOutSlowInEasing),
-      repeatMode = RepeatMode.Reverse
-    ),
-    label = "btnPulseAlpha"
-  )
-
-  val borderColor by animateColorAsState(
-    targetValue = when {
-      !isEnabled -> DvexBorderMuted
-      isActive -> DvexNeonRedBright
-      else -> DvexBorderRed
-    },
-    label = "btnBorderColor"
-  )
-
-  val backgroundColor by animateColorAsState(
-    targetValue = when {
-      !isEnabled -> DvexBlack.copy(alpha = 0.5f)
-      isActive -> DvexSurfaceCard
-      else -> DvexBlack.copy(alpha = 0.8f)
-    },
-    label = "btnBgColor"
-  )
-
-  val iconTint = when {
-    !isEnabled -> DvexTextMuted
-    isActive -> DvexNeonRedBright
-    else -> DvexTextPrimary
+  val borderColor = when {
+    active -> DvexNeonRedBright
+    enabled -> DvexBorderRed
+    else -> DvexBorderMuted
   }
+  val contentColor = when {
+    active -> DvexNeonRedBright
+    enabled -> DvexTextSecondary
+    else -> DvexTextMuted
+  }
+  val hexShape = CutCornerShape(topStart = 14.dp, topEnd = 14.dp, bottomStart = 14.dp, bottomEnd = 14.dp)
 
-  val shape = CutCornerShape(10.dp)
-
-  Column(
-    modifier = Modifier
-      .defaultMinSize(minWidth = 76.dp, minHeight = 60.dp)
-      .clip(shape)
-      .background(backgroundColor)
-      .border(1.dp, borderColor, shape)
-      .clickable(
-        enabled = isEnabled,
-        role = Role.Button,
-        interactionSource = remember { MutableInteractionSource() },
-        indication = null,
-        onClick = onClick
-      )
-      .padding(horizontal = 8.dp, vertical = 6.dp)
-      .testTag(testTag),
-    horizontalAlignment = Alignment.CenterHorizontally,
-    verticalArrangement = Arrangement.Center
-  ) {
-    Row(
-      verticalAlignment = Alignment.CenterVertically,
-      horizontalArrangement = Arrangement.Center
+  Column(horizontalAlignment = Alignment.CenterHorizontally) {
+    Box(
+      modifier = Modifier
+        .size(64.dp)
+        .testTag(testTag)
+        .clip(hexShape)
+        .background(if (active) DvexSurfaceCard else DvexBlack.copy(alpha = 0.7f))
+        .border(1.dp, borderColor, hexShape)
+        .drawBehind {
+          if (active) {
+            drawRect(
+              brush = Brush.radialGradient(
+                colors = listOf(DvexNeonRedGlow, Color.Transparent),
+                radius = size.maxDimension
+              )
+            )
+          }
+        }
+        .clickable(enabled = enabled, onClick = onClick)
+        .semantics { contentDescription = description }
+        .padding(10.dp),
+      contentAlignment = Alignment.Center
     ) {
       Icon(
         imageVector = icon,
-        contentDescription = "$label button",
-        tint = iconTint,
-        modifier = Modifier.size(16.dp)
+        contentDescription = null,
+        tint = contentColor,
+        modifier = Modifier.size(22.dp)
       )
-      if (isActive && isEnabled) {
-        Spacer(modifier = Modifier.width(4.dp))
-        Box(
-          modifier = Modifier
-            .size(5.dp)
-            .clip(CircleShape)
-            .background(DvexNeonRedBright)
-            .alpha(pulseAlpha)
-        )
-      }
     }
-
     Spacer(modifier = Modifier.height(3.dp))
-
     Text(
       text = label,
       fontFamily = FontFamily.Monospace,
-      fontSize = 9.sp,
+      fontSize = 8.sp,
       fontWeight = FontWeight.Bold,
-      color = if (isEnabled) DvexTextPrimary else DvexTextMuted,
-      textAlign = TextAlign.Center
+      letterSpacing = 1.sp,
+      color = if (active) DvexNeonRedBright else contentColor
     )
+  }
+}
 
+/**
+ * Compact device-control chip (HOME / BACK / RECENTS / NOTIFS) — 48dp minimum.
+ */
+@Composable
+private fun PowerMiniButton(
+  label: String,
+  testTag: String,
+  description: String,
+  onClick: () -> Unit
+) {
+  Box(
+    modifier = Modifier
+      .defaultMinSize(minWidth = 48.dp, minHeight = 48.dp)
+      .testTag(testTag)
+      .clip(CutCornerShape(3.dp))
+      .background(DvexSurfaceCard)
+      .border(1.dp, DvexBorderRed, CutCornerShape(3.dp))
+      .clickable(onClick = onClick)
+      .semantics { contentDescription = description }
+      .padding(horizontal = 10.dp, vertical = 6.dp)
+  ) {
     Text(
-      text = sublabel,
+      text = label,
       fontFamily = FontFamily.Monospace,
-      fontSize = 7.sp,
-      fontWeight = if (isActive) FontWeight.Bold else FontWeight.Normal,
-      color = if (isActive && isEnabled) DvexNeonRedBright else DvexTextMuted,
-      textAlign = TextAlign.Center
+      fontSize = 8.sp,
+      fontWeight = FontWeight.Bold,
+      letterSpacing = 1.sp,
+      color = DvexTextSecondary
     )
   }
 }

@@ -13,6 +13,8 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -20,6 +22,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -69,17 +72,6 @@ fun VoiceModule(
   voiceState: VoiceState,
   modifier: Modifier = Modifier
 ) {
-  val infiniteTransition = rememberInfiniteTransition(label = "voiceMiniWave")
-  val wavePhase by infiniteTransition.animateFloat(
-    initialValue = 0f,
-    targetValue = 6.28f,
-    animationSpec = infiniteRepeatable(
-      animation = tween(1200),
-      repeatMode = RepeatMode.Restart
-    ),
-    label = "miniWavePhase"
-  )
-
   TacticalPanel(
     title = "Voice Module",
     headerTag = "VOICE ENGINE",
@@ -112,28 +104,12 @@ fun VoiceModule(
 
       Spacer(modifier = Modifier.height(4.dp))
 
-      // Mini soundwave canvas
-      Canvas(
-        modifier = Modifier
-          .fillMaxWidth()
-          .height(18.dp)
-      ) {
-        val midY = size.height / 2f
-        val count = 16
-        val step = size.width / count
-
-        for (i in 0 until count) {
-          val x = i * step + step / 2f
-          val waveH = (size.height * 0.7f) * kotlin.math.abs(sin(i * 0.4f + wavePhase)) + 2.dp.toPx()
-          drawLine(
-            color = DvexNeonRed,
-            start = androidx.compose.ui.geometry.Offset(x, midY - waveH / 2f),
-            end = androidx.compose.ui.geometry.Offset(x, midY + waveH / 2f),
-            strokeWidth = 2.dp.toPx(),
-            cap = StrokeCap.Square
-          )
-        }
-      }
+      // Mini soundwave — shared waveform implementation
+      VoiceWaveform(
+        modifier = Modifier.fillMaxWidth(),
+        barCount = 16,
+        barHeight = 18.dp
+      )
     }
   }
 }
@@ -226,32 +202,83 @@ fun MicrophoneButton(
 }
 
 /**
- * Bottom Right: D-VEX Response Panel
+ * BOTTOM-RIGHT compact conversation card.
+ *
+ * Shows the LAST real exchange: what the user said or typed, and the final D-VEX
+ * response — the exact same string handed to the TTS layer, so display and voice
+ * can never diverge. Deliberately small and wrap-content: the caller bounds its
+ * width and height, so it never becomes a full-width panel and never covers the
+ * centred reactor. Only real content is rendered — no debug, tool, intent or
+ * implementation data.
  */
 @Composable
-fun ResponsePanel(
+fun DvexConversationCard(
+  userInput: String,
   responseText: String,
   modifier: Modifier = Modifier
 ) {
   TacticalPanel(
-    title = "D-VEX Response",
-    headerTag = "OUTPUT STREAM",
+    title = "D-VEX RESPONSE",
+    headerTag = "LIVE",
     modifier = modifier
   ) {
     Column(
       modifier = Modifier
         .fillMaxWidth()
-        .padding(8.dp)
+        .heightIn(min = 42.dp)
+        .padding(horizontal = 8.dp, vertical = 7.dp)
+        .verticalScroll(rememberScrollState())
     ) {
+      if (userInput.isNotBlank()) {
+        Text(
+          text = "YOU",
+          fontFamily = FontFamily.Monospace,
+          fontSize = 7.sp,
+          fontWeight = FontWeight.Bold,
+          letterSpacing = 1.sp,
+          color = DvexTextMuted
+        )
+        Text(
+          text = userInput,
+          fontFamily = FontFamily.Monospace,
+          fontSize = 10.sp,
+          color = DvexTextMuted,
+          lineHeight = 13.sp
+        )
+        Spacer(modifier = Modifier.height(6.dp))
+      }
+
       Text(
-        text = "\"$responseText\"",
+        text = "D-VEX",
         fontFamily = FontFamily.Monospace,
-        fontSize = 11.sp,
-        fontWeight = FontWeight.SemiBold,
-        color = DvexNeonRedBright,
-        letterSpacing = 0.5.sp
+        fontSize = 7.sp,
+        fontWeight = FontWeight.Bold,
+        letterSpacing = 1.sp,
+        color = DvexNeonRed
       )
-      Spacer(modifier = Modifier.height(4.dp))
+      if (responseText.isBlank()) {
+        // Honest empty state: D-VEX has nothing to say until it has actually
+        // said it. No canned "ready" / "standing by" line is ever fabricated.
+        Text(
+          text = "—",
+          fontFamily = FontFamily.Monospace,
+          fontSize = 11.sp,
+          color = DvexTextMuted
+        )
+      } else {
+        Text(
+          text = responseText,
+          fontFamily = FontFamily.Monospace,
+          fontSize = 11.sp,
+          fontWeight = FontWeight.SemiBold,
+          color = DvexNeonRedBright,
+          letterSpacing = 0.3.sp,
+          lineHeight = 15.sp
+        )
+      }
+      Spacer(modifier = Modifier.height(5.dp))
+      // Synthesis / audio state footer — real state only, never implementation
+      // details. Matches the reference layout's compact status line.
       Text(
         text = "SYNTHESIS: READY // AUDIO OUT: ACTIVE",
         fontFamily = FontFamily.Monospace,

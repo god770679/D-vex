@@ -60,19 +60,49 @@ data class ActivityItem(
   val isSuccess: Boolean = true
 )
 
+/**
+ * Weather Telemetry panel state. No fabricated defaults: [hasData]=false renders
+ * the panel's honest STANDBY state until a real fetch succeeds. Demo values
+ * ("30°C / CHENNAI / PARTLY CLOUDY") are never shown as real data.
+ */
 data class WeatherInfo(
-  val temperatureCelsius: Int = 30,
-  val condition: String = "PARTLY CLOUDY",
-  val location: String = "CHENNAI",
-  val highCelsius: Int = 34,
-  val lowCelsius: Int = 26
+  val hasData: Boolean = false,
+  val temperatureCelsius: Int = 0,
+  val condition: String = "",
+  val location: String = "",
+  val highCelsius: Int = 0,
+  val lowCelsius: Int = 0
 )
 
+/**
+ * One real entry for the on-screen RECENT APPS overlay (UsageStatsManager data,
+ * resolved via PackageManager — never fabricated).
+ */
+data class RecentAppEntry(
+  val packageName: String,
+  val appName: String,
+  val lastUsedTimestampMs: Long,
+  val lastUsedLabel: String
+)
+
+/** Camera permission state for the Vision panel (Phase 1). */
+data class CameraPermissionState(
+  val granted: Boolean = false,
+  val requested: Boolean = false
+)
+
+/**
+ * Geo Coordinates panel state. Fabricated demo defaults removed (Bug 4 regression
+ * audit): [hasData]=false renders the panel's honest STANDBY state until a real
+ * device fix succeeds — a real GPS fix never shows "CHENNAI" or fake satellite data.
+ */
 data class LocationInfo(
-  val city: String = "CHENNAI",
-  val latitude: String = "13.0827° N",
-  val longitude: String = "80.2707° E",
-  val altitudeMeters: Int = 16
+  val hasData: Boolean = false,
+  val city: String = "",
+  val latitude: String = "",
+  val longitude: String = "",
+  val altitudeMeters: Int? = null,
+  val accuracyMeters: Int? = null
 )
 
 data class DvexUiState(
@@ -81,15 +111,27 @@ data class DvexUiState(
   val selectedNavigation: NavItem = NavItem.HOME,
   val systemStatus: SystemVitals = SystemVitals(),
   val memoryPercentage: Int = 76,
-  val responseText: String = "Yes Sir, I'm listening...",
+  /**
+   * The LAST final D-VEX response (the exact string sent to TTS). Empty until the
+   * brain has produced a real reply — never a hardcoded conversational line.
+   */
+  val responseText: String = "",
+  /**
+   * The user's latest input (typed or spoken), shown above the response in the
+   * conversation card. Empty until the user says something.
+   */
+  val lastUserInput: String = "",
   val weather: WeatherInfo = WeatherInfo(),
   val location: LocationInfo = LocationInfo(),
-  val notifications: List<NotificationItem> = listOf(
-    NotificationItem("1", "New message", "Encrypted link", "2m ago"),
-    NotificationItem("2", "D-VEX ready", "All sub-systems nominal", "5m ago"),
-    NotificationItem("3", "System active", "Secure protocol 4", "12m ago"),
-    NotificationItem("4", "Battery check", "Level 89% optimal", "20m ago")
-  ),
+  val cameraPermission: CameraPermissionState = CameraPermissionState(),
+  /** Real usage-stats list shown by the on-screen RECENT APPS overlay; null = hidden. */
+  val recentAppsOverlay: List<RecentAppEntry>? = null,
+  /** True when the overlay is open but usage access is denied — honest permission state. */
+  val recentAppsOverlayPermissionRequired: Boolean = false,
+  // Bug 5: System Alerts is fed ONLY by DvexNotificationListenerService's real
+  // captured feed (collected in AssistantViewModel). No hardcoded demo data —
+  // an empty list renders the panel's honest empty/permission-required state.
+  val notifications: List<NotificationItem> = emptyList(),
   val recentActivities: List<ActivityItem> = listOf(
     ActivityItem("1", "Meeting reminder set", "10:30 AM"),
     ActivityItem("2", "Message transmitted", "09:45 AM"),

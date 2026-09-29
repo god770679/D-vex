@@ -22,6 +22,8 @@ import androidx.compose.material.icons.filled.AccessibilityNew
 import androidx.compose.material.icons.filled.BatteryChargingFull
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.History
+import androidx.compose.material.icons.filled.NotificationsActive
 import androidx.compose.material.icons.filled.Layers
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Notifications
@@ -39,6 +41,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.key
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -83,6 +86,23 @@ fun AlwaysReadySettingsDialog(
   val hasNotif = DvexPermissionManager.hasNotificationPermission(context)
   val hasAccessibility = DvexPermissionManager.isAccessibilityServiceEnabled(context)
   val hasBattery = DvexPermissionManager.hasBatteryOptimizationExemption(context)
+  val hasUsageAccess = DvexPermissionManager.hasUsageAccess(context)
+  val hasNotificationListener = DvexPermissionManager.isNotificationListenerEnabled(context)
+
+  // Recompute special-permission states when the user returns from their Settings screens.
+  var usageAccessTick by remember { mutableStateOf(0) }
+  var listenerTick by remember { mutableStateOf(0) }
+  val lifecycleOwner = androidx.compose.ui.platform.LocalLifecycleOwner.current
+  androidx.compose.runtime.DisposableEffect(lifecycleOwner) {
+    val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+      if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) {
+        usageAccessTick++
+        listenerTick++
+      }
+    }
+    lifecycleOwner.lifecycle.addObserver(observer)
+    onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+  }
 
   Dialog(onDismissRequest = onDismiss) {
     Box(
@@ -247,12 +267,9 @@ fun AlwaysReadySettingsDialog(
           )
         }
 
-        SettingToggleRow(
-          title = "VOICE CONFIRMATION",
-          subtitle = "Play verbal response (\"Yes Sir\") upon wake-word trigger",
-          checked = settings.voiceConfirmationEnabled,
-          onCheckedChange = { onSettingsChanged(settings.copy(voiceConfirmationEnabled = it)) }
-        )
+        // The obsolete "VOICE CONFIRMATION" toggle was removed. Its only consumer was
+        // the canned wake acknowledgement, which no longer exists — wake detection is
+        // a silent state transition, so the setting had no effect and was misleading.
 
         SettingToggleRow(
           title = "FLOATING ORB",
@@ -466,7 +483,27 @@ fun AlwaysReadySettingsDialog(
           onGrantClick = { onRequestNotificationPermission() }
         )
 
-        // 5. Battery / Background Access
+        // 5. Usage Access (real recent-apps data — Bug 5)
+        key(usageAccessTick) {
+          PermissionStatusRow(
+            title = "Usage Access (Real Recent Apps)",
+            icon = Icons.Default.History,
+            granted = DvexPermissionManager.hasUsageAccess(context),
+            onGrantClick = { context.startActivity(DvexPermissionManager.createUsageAccessSettingsIntent()) }
+          )
+        }
+
+        // 6. Notification Listener (real System Alerts data — Bug 5)
+        key(listenerTick) {
+          PermissionStatusRow(
+            title = "Notification Access (Real System Alerts)",
+            icon = Icons.Default.NotificationsActive,
+            granted = DvexPermissionManager.isNotificationListenerEnabled(context),
+            onGrantClick = { context.startActivity(DvexPermissionManager.createNotificationListenerSettingsIntent()) }
+        )
+        }
+
+        // 7. Battery / Background Access
         PermissionStatusRow(
           title = "Battery / Background Access (Unrestricted)",
           icon = Icons.Default.BatteryChargingFull,

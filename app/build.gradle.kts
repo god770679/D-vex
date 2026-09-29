@@ -21,6 +21,27 @@ android {
     versionName = "1.0"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
+    // GEMINI_API_KEY provisioning (two sources, resolved in order):
+    // 1. Freebuff/cloud environment: the key is injected as GEMINI_API_KEY into
+    //    the build environment (read via System.getenv below).
+    // 2. Project .env via the Secrets Gradle Plugin
+    //    (secrets.propertiesFileName = ".env"), for local development.
+    // A missing key resolves to "" and GeminiEngine treats it as disabled —
+    // D-VEX falls back to static replies (a build-time warning is printed).
+    val geminiKey = System.getenv("GEMINI_API_KEY")
+      ?.takeIf { it.isNotBlank() }
+      ?: project.findProperty("GEMINI_API_KEY")?.toString()?.takeIf { it.isNotBlank() }
+      ?: ""
+    if (geminiKey.isBlank()) {
+      println("WARNING: GEMINI_API_KEY is not set — GeminiEngine will be disabled and " +
+        "D-VEX will use deterministic fallback replies.")
+    }
+    buildConfigField(
+      "String",
+      "GEMINI_API_KEY",
+      "\"$geminiKey\""
+    )
   }
 
   signingConfigs {
@@ -80,10 +101,12 @@ dependencies {
   implementation(platform(libs.firebase.bom))
   // implementation(libs.accompanist.permissions)
   implementation(libs.androidx.activity.compose)
-  // implementation(libs.androidx.camera.camera2)
-  // implementation(libs.androidx.camera.core)
-  // implementation(libs.androidx.camera.lifecycle)
-  // implementation(libs.androidx.camera.view)
+  implementation(libs.androidx.camera.camera2)
+  implementation(libs.androidx.camera.core)
+  implementation(libs.androidx.camera.lifecycle)
+  implementation(libs.androidx.camera.view)
+  implementation(libs.mlkit.image.labeling)
+  implementation(libs.mlkit.face.detection)
   implementation(libs.androidx.compose.material.icons.core)
   implementation(libs.androidx.compose.material.icons.extended)
   implementation(libs.androidx.compose.material3)

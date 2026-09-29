@@ -19,6 +19,12 @@ sealed class DvexIntent {
   object LockScreen : DvexIntent()
   data class Scroll(val direction: ScrollDirection) : DvexIntent()
 
+  /**
+   * Device control layer: open a real Android system settings screen. D-VEX never
+   * silently mutates a sensitive setting — it opens the platform screen instead.
+   */
+  data class OpenSystemSettings(val kind: SystemSettingsKind) : DvexIntent()
+
   // --- Communication (Sensitive Actions) ---
   data class CallContact(val recipient: String) : DvexIntent()
   data class SendMessage(val recipient: String, val messageText: String? = null, val isWhatsApp: Boolean = false) : DvexIntent()
@@ -26,7 +32,7 @@ sealed class DvexIntent {
 
   // --- Device Hardware Controls ---
   data class ToggleFlashlight(val enable: Boolean? = null) : DvexIntent()
-  data class SetAlarm(val hour: Int, val minute: Int, val message: String? = null) : DvexIntent()
+  data class SetAlarm(val hour: Int?, val minute: Int?, val message: String? = null) : DvexIntent()
   data class SetTimer(val seconds: Int, val message: String? = null) : DvexIntent()
 
   // --- Live Information & Utility ---
@@ -35,6 +41,12 @@ sealed class DvexIntent {
   data class GetNews(val topic: String? = null) : DvexIntent()
   object GetTime : DvexIntent()
   data class Calculate(val expression: String) : DvexIntent()
+
+  // --- Real Device Intelligence (Bug 5) ---
+  object GetRecentApps : DvexIntent()
+
+  // --- Phase A: YouTube video search via system intents (no accessibility) ---
+  data class PlayYoutubeVideo(val query: String) : DvexIntent()
 
   // --- Wake / Greeting ---
   object WakeGreeting : DvexIntent()
@@ -60,6 +72,16 @@ sealed class DvexIntent {
 }
 
 enum class ScrollDirection { UP, DOWN }
+
+/** System settings screens Android exposes for read-only navigation by an app. */
+enum class SystemSettingsKind(val displayName: String) {
+  BLUETOOTH("Bluetooth settings"),
+  DISPLAY("Display settings"),
+  DATE_TIME("Date & time settings"),
+  LOCATION("Location settings"),
+  NOTIFICATION("Notification settings"),
+  ACCESSIBILITY("Accessibility settings")
+}
 enum class VolumeAction { UP, DOWN, MUTE }
 enum class MediaAction { PLAY_PAUSE, NEXT, PREVIOUS }
 

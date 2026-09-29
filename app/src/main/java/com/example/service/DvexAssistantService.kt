@@ -131,8 +131,8 @@ class DvexAssistantService : Service() {
       is DvexAssistantState.Standby -> "Ready • Standby"
       is DvexAssistantState.WakeWordListening -> "Listening for \"D-VEX\"..."
       is DvexAssistantState.Listening -> "Listening..."
-      is DvexAssistantState.Processing -> "Got it, Sir..."
-      is DvexAssistantState.ExecutingAction -> "Working on it, Sir..."
+      is DvexAssistantState.Processing -> "Processing..."
+      is DvexAssistantState.ExecutingAction -> "Working on it..."
       is DvexAssistantState.Speaking -> "Speaking..."
       is DvexAssistantState.Error -> state.message
     }

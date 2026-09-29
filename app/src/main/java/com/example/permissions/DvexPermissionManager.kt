@@ -2,6 +2,7 @@ package com.example.permissions
 
 import android.Manifest
 import android.accessibilityservice.AccessibilityServiceInfo
+import android.app.AppOpsManager
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -10,6 +11,7 @@ import android.os.Build
 import android.os.PowerManager
 import android.provider.Settings
 import android.view.accessibility.AccessibilityManager
+import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
 import com.example.control.DvexAccessibilityService
 
@@ -24,6 +26,26 @@ object DvexPermissionManager {
       context,
       Manifest.permission.RECORD_AUDIO
     ) == PackageManager.PERMISSION_GRANTED
+  }
+
+  fun hasCameraPermission(context: Context): Boolean {
+    return ContextCompat.checkSelfPermission(
+      context,
+      Manifest.permission.CAMERA
+    ) == PackageManager.PERMISSION_GRANTED
+  }
+
+  /** True when fine OR coarse location is granted (coarse is enough for a city-level weather fix). */
+  fun hasLocationPermission(context: Context): Boolean {
+    val fine = ContextCompat.checkSelfPermission(
+      context,
+      Manifest.permission.ACCESS_FINE_LOCATION
+    ) == PackageManager.PERMISSION_GRANTED
+    val coarse = ContextCompat.checkSelfPermission(
+      context,
+      Manifest.permission.ACCESS_COARSE_LOCATION
+    ) == PackageManager.PERMISSION_GRANTED
+    return fine || coarse
   }
 
   fun hasCallPhonePermission(context: Context): Boolean {
@@ -49,6 +71,48 @@ object DvexPermissionManager {
 
   fun hasAllCommunicationPermissions(context: Context): Boolean {
     return hasCallPhonePermission(context) && hasContactsPermission(context) && hasSmsPermission(context)
+  }
+
+  /**
+   * True when the user granted the special "Usage access" permission
+   * (PACKAGE_USAGE_STATS). There is no runtime dialog for it — the user must
+   * enable it manually via [createUsageAccessSettingsIntent].
+   */
+  fun hasUsageAccess(context: Context): Boolean {
+    val appOps = context.getSystemService(Context.APP_OPS_SERVICE) as? AppOpsManager
+      ?: return false
+    val mode = appOps.checkOpNoThrow(
+      AppOpsManager.OPSTR_GET_USAGE_STATS,
+      android.os.Process.myUid(),
+      context.packageName
+    )
+    return mode == AppOpsManager.MODE_ALLOWED
+  }
+
+  /** Settings deep-link: "Usage access" list where the user enables PACKAGE_USAGE_STATS. */
+  fun createUsageAccessSettingsIntent(): Intent {
+    return Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS).apply {
+      addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    }
+  }
+
+  /**
+   * True when D-VEX's [com.example.service.DvexNotificationListenerService] is an
+   * enabled listener component. Enabled here means the OS-component check; the
+   * listener also reports live connection state via its companion.
+   */
+  fun isNotificationListenerEnabled(context: Context): Boolean {
+    // Public androidx API over the OS "enabled_notification_listeners" secure setting.
+    // (Settings.Secure.ENABLED_NOTIFICATION_LISTENERS itself is a hidden constant.)
+    return NotificationManagerCompat.getEnabledListenerPackages(context)
+      .contains(context.packageName)
+  }
+
+  /** Settings deep-link: "Notification access" list where the user enables the listener. */
+  fun createNotificationListenerSettingsIntent(): Intent {
+    return Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS).apply {
+      addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    }
   }
 
   fun hasNotificationPermission(context: Context): Boolean {

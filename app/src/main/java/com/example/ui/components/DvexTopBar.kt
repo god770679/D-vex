@@ -9,6 +9,7 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -16,6 +17,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -26,18 +28,26 @@ import androidx.compose.material.icons.filled.BatteryChargingFull
 import androidx.compose.material.icons.filled.Wifi
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
+import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.mode.PowerModeManager
 import com.example.model.DvexUiState
 import com.example.ui.theme.DvexBlack
 import com.example.ui.theme.DvexBorderMuted
@@ -55,8 +65,7 @@ fun DvexTopBar(
   uiState: DvexUiState,
   modifier: Modifier = Modifier,
   isCompact: Boolean = false,
-  isPowerMode: Boolean = false,
-  onTogglePowerMode: () -> Unit = {}
+  onModeSelectorRequested: (() -> Unit)? = null
 ) {
   val infiniteTransition = rememberInfiniteTransition(label = "pulseTransition")
   val pulseAlpha by infiniteTransition.animateFloat(
@@ -72,6 +81,9 @@ fun DvexTopBar(
   Column(
     modifier = modifier
       .fillMaxWidth()
+      // Adaptive cap: on short landscape phones the header must not eat the
+      // viewport height that the centred reactor needs (no content change).
+      .heightIn(max = 56.dp)
       .background(DvexSurfaceDark)
       .border(1.dp, DvexBorderMuted, CutCornerShape(bottomStart = 8.dp, bottomEnd = 8.dp))
       .padding(horizontal = 12.dp, vertical = 6.dp)
@@ -81,84 +93,44 @@ fun DvexTopBar(
       horizontalArrangement = Arrangement.SpaceBetween,
       verticalAlignment = Alignment.CenterVertically
     ) {
-      // LEFT: Brand identity + Mode Switch
-      Row(verticalAlignment = Alignment.CenterVertically) {
-        Row(
-          verticalAlignment = Alignment.CenterVertically,
+      // LEFT: Brand identity
+      Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier
+          .border(1.dp, DvexBorderRed, CutCornerShape(topStart = 6.dp, bottomEnd = 6.dp))
+          .background(DvexBlack.copy(alpha = 0.6f))
+          .padding(horizontal = 8.dp, vertical = 4.dp)
+      ) {
+        Box(
           modifier = Modifier
-            .border(1.dp, DvexBorderRed, CutCornerShape(topStart = 6.dp, bottomEnd = 6.dp))
-            .background(DvexBlack.copy(alpha = 0.6f))
-            .padding(horizontal = 8.dp, vertical = 4.dp)
-        ) {
-          Box(
-            modifier = Modifier
-              .size(6.dp, 24.dp)
-              .background(DvexNeonRed)
-          )
-          Spacer(modifier = Modifier.width(8.dp))
-          Column {
-            Text(
-              text = "D-VEX",
-              fontFamily = FontFamily.Monospace,
-              fontSize = 16.sp,
-              fontWeight = FontWeight.ExtraBold,
-              letterSpacing = 3.sp,
-              color = DvexNeonRedBright
-            )
-            Text(
-              text = "AI ASSISTANT",
-              fontFamily = FontFamily.Monospace,
-              fontSize = 8.sp,
-              fontWeight = FontWeight.Bold,
-              letterSpacing = 1.5.sp,
-              color = DvexTextSecondary
-            )
-          }
-        }
-
+            .size(6.dp, 24.dp)
+            .background(DvexNeonRed)
+        )
         Spacer(modifier = Modifier.width(8.dp))
-
-        // D-VEX DUAL MODE TOGGLE (STANDARD / POWER)
-        Row(
-          verticalAlignment = Alignment.CenterVertically,
-          modifier = Modifier
-            .clip(CutCornerShape(4.dp))
-            .border(1.dp, if (isPowerMode) DvexNeonRedBright else DvexBorderMuted, CutCornerShape(4.dp))
-            .background(DvexBlack.copy(alpha = 0.8f))
-            .clickable { onTogglePowerMode() }
-            .padding(2.dp)
-            .testTag("mode_toggle_switch")
-        ) {
-          Box(
-            modifier = Modifier
-              .clip(CutCornerShape(3.dp))
-              .background(if (!isPowerMode) DvexNeonRed else Color.Transparent)
-              .padding(horizontal = 5.dp, vertical = 3.dp)
-          ) {
-            Text(
-              text = "STD",
-              fontFamily = FontFamily.Monospace,
-              fontSize = 8.sp,
-              fontWeight = if (!isPowerMode) FontWeight.ExtraBold else FontWeight.Medium,
-              color = if (!isPowerMode) Color.White else DvexTextMuted
-            )
-          }
-          Box(
-            modifier = Modifier
-              .clip(CutCornerShape(3.dp))
-              .background(if (isPowerMode) DvexNeonRed else Color.Transparent)
-              .padding(horizontal = 5.dp, vertical = 3.dp)
-          ) {
-            Text(
-              text = "PWR",
-              fontFamily = FontFamily.Monospace,
-              fontSize = 8.sp,
-              fontWeight = if (isPowerMode) FontWeight.ExtraBold else FontWeight.Medium,
-              color = if (isPowerMode) Color.White else DvexTextMuted
-            )
-          }
+        Column {
+          Text(
+            text = "D-VEX",
+            fontFamily = FontFamily.Monospace,
+            fontSize = 16.sp,
+            fontWeight = FontWeight.ExtraBold,
+            letterSpacing = 3.sp,
+            color = DvexNeonRedBright
+          )
+          Text(
+            text = "AI ASSISTANT",
+            fontFamily = FontFamily.Monospace,
+            fontSize = 8.sp,
+            fontWeight = FontWeight.Bold,
+            letterSpacing = 1.5.sp,
+            color = DvexTextSecondary
+          )
         }
       }
+
+      // DUAL MODE: Standard / Power indicator chip (additive control in the
+      // existing header; no header redesign). Tapping opens the real D-VEX MODE
+      // selector popup — it never silently flips the mode on its own.
+      DvexPowerModeToggle(onClick = onModeSelectorRequested)
 
       // CENTER: Time, Date, System Online
       Column(
@@ -297,6 +269,84 @@ fun DvexTopBar(
           )
         }
       }
+    }
+  }
+}
+
+/**
+ * DUAL MODE SYSTEM: Standard / Power header chip (additive).
+ *
+ * Compact chip in the EXISTING DvexTopBar row — the header layout itself is
+ * untouched. Follows the existing D-VEX black/red cyber style: monospace type,
+ * thin cut-corner borders, subtle red glow. Target is at least 48dp for touch.
+ *
+ * State source of truth: PowerModeManager's persisted StateFlow (default OFF =
+ * Standard). Tapping invokes [onClick] (the HUD opens the D-VEX MODE selector);
+ * this chip NEVER flips the mode silently.
+ */
+@Composable
+fun DvexPowerModeToggle(
+  modifier: Modifier = Modifier,
+  onClick: (() -> Unit)? = null
+) {
+  val context = LocalContext.current
+  val powerModeManager = remember { PowerModeManager.getInstance(context) }
+  val powerEnabled by powerModeManager.powerModeEnabled.collectAsState()
+
+  val chipLabel = if (powerEnabled) "POWER" else "STANDARD"
+  val stateColor = if (powerEnabled) DvexNeonRedBright else DvexTextSecondary
+  val chipDescription = if (powerEnabled) {
+    "Power Mode active. Tap to open the D-VEX mode selector."
+  } else {
+    "Standard Mode active. Tap to open the D-VEX mode selector."
+  }
+
+  Box(
+    modifier = modifier
+      .minimumInteractiveComponentSize()
+      .clip(CutCornerShape(4.dp))
+      .background(DvexBlack.copy(alpha = 0.6f))
+      .border(1.dp, DvexBorderRed, CutCornerShape(4.dp))
+      .drawBehind {
+        if (powerEnabled) {
+          drawRect(
+            brush = Brush.radialGradient(
+              colors = listOf(DvexNeonRedGlow, Color.Transparent),
+              radius = size.maxDimension
+            )
+          )
+        }
+      }
+      .clickable(enabled = onClick != null) { onClick?.invoke() }
+      .semantics { contentDescription = chipDescription }
+      .padding(horizontal = 8.dp, vertical = 6.dp)
+  ) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+      Box(
+        modifier = Modifier
+          .size(5.dp)
+          .clip(CircleShape)
+          .background(if (powerEnabled) DvexNeonRedBright else DvexTextMuted)
+          .alpha(if (powerEnabled) 1f else 0.6f)
+      )
+      Spacer(modifier = Modifier.width(5.dp))
+      Text(
+        text = chipLabel,
+        fontFamily = FontFamily.Monospace,
+        fontSize = 9.sp,
+        fontWeight = FontWeight.ExtraBold,
+        letterSpacing = 1.2.sp,
+        color = stateColor
+      )
+      Spacer(modifier = Modifier.width(4.dp))
+      Text(
+        text = "MODE",
+        fontFamily = FontFamily.Monospace,
+        fontSize = 7.sp,
+        fontWeight = FontWeight.Bold,
+        letterSpacing = 1.sp,
+        color = DvexTextMuted
+      )
     }
   }
 }

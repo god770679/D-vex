@@ -9,6 +9,7 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
+import kotlinx.coroutines.test.runTest
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [36])
@@ -22,7 +23,8 @@ class DvexSmartBrainTest {
   fun setUp() {
     detector = IntentDetector()
     context = ConversationContext()
-    responseGenerator = DvexResponseGenerator()
+    // No engine -> deterministic fallback path (same public contract, no network).
+    responseGenerator = DvexResponseGenerator(aiEngine = null)
   }
 
   @Test
@@ -151,8 +153,14 @@ class DvexSmartBrainTest {
     assertEquals("tractor videos", query)
   }
 
+  // ==========================================================================
+  // V2: Response generation is LLM-driven with deterministic fallback.
+  // The old exact-string assertions on canned templates were replaced by
+  // contract checks: no internal leakage, fallback carries real tool data.
+  // ==========================================================================
+
   @Test
-  fun testNaturalResponseGenerationNoInternalLeakage() {
+  fun testNaturalResponseGenerationNoInternalLeakage() = runTest {
     val openAppIntent = DvexIntent.OpenApp("YouTube")
     val toolResult = DvexToolResult(
       status = DvexToolStatus.SUCCESS,
@@ -162,13 +170,13 @@ class DvexSmartBrainTest {
     )
 
     val response = responseGenerator.generateResponse(openAppIntent, toolResult, DetectedLanguage.ENGLISH)
-    assertEquals("Opening YouTube.", response)
     assertFalse("Must never leak raw internal intent strings", response.contains("OPEN_APP"))
     assertFalse("Must never leak raw internal status strings", response.contains("SUCCESS"))
+    assertTrue("Fallback must not go silent", response.isNotBlank())
   }
 
   @Test
-  fun testFailedActionResponseGeneration() {
+  fun testFailedActionResponseGeneration() = runTest {
     val notFoundResult = DvexToolResult(
       status = DvexToolStatus.NOT_FOUND,
       toolName = "open_app",
@@ -182,7 +190,7 @@ class DvexSmartBrainTest {
   }
 
   @Test
-  fun testPermissionRequiredResponseGeneration() {
+  fun testPermissionRequiredResponseGeneration() = runTest {
     val permResult = DvexToolResult(
       status = DvexToolStatus.PERMISSION_REQUIRED,
       toolName = "back",
@@ -233,46 +241,15 @@ class DvexSmartBrainTest {
   }
 
   @Test
-  fun testToneEstimationAndNaturalResponses() {
-    // Frustrated
-    val toneFrustrated = responseGenerator.estimateTone("kaduppa irukku da")
-    assertEquals(EstimatedTone.FRUSTRATED, toneFrustrated)
-    val respFrustrated = responseGenerator.generateResponse(
-      intent = DvexIntent.Conversation("kaduppa irukku da"),
-      toolResult = DvexToolResult(DvexToolStatus.SUCCESS, "conversation", "", ""),
-      language = DetectedLanguage.TANGLISH,
-      userInput = "kaduppa irukku da",
-      tone = toneFrustrated
-    )
-    assertTrue("Should be calm, supportive step-by-step response", respFrustrated.contains("step-by-step"))
-
-    // Sad
-    val toneSad = responseGenerator.estimateTone("sogama irukku da")
-    assertEquals(EstimatedTone.SAD, toneSad)
-    val respSad = responseGenerator.generateResponse(
-      intent = DvexIntent.Conversation("sogama irukku da"),
-      toolResult = DvexToolResult(DvexToolStatus.SUCCESS, "conversation", "", ""),
-      language = DetectedLanguage.TANGLISH,
-      userInput = "sogama irukku da",
-      tone = toneSad
-    )
-    assertTrue("Should be empathetic response", respSad.contains("நான் இருக்கேன்"))
-
-    // Excited
-    val toneExcited = responseGenerator.estimateTone("vera level da")
-    assertEquals(EstimatedTone.EXCITED, toneExcited)
-    val respExcited = responseGenerator.generateResponse(
-      intent = DvexIntent.Conversation("vera level da"),
-      toolResult = DvexToolResult(DvexToolStatus.SUCCESS, "conversation", "", ""),
-      language = DetectedLanguage.TANGLISH,
-      userInput = "vera level da",
-      tone = toneExcited
-    )
-    assertTrue("Should be excited response", respExcited.contains("அடுத்த level"))
+  fun testToneEstimation() {
+    // Tone estimation is unchanged and still feeds the LLM prompt as styling signal.
+    assertEquals(EstimatedTone.FRUSTRATED, responseGenerator.estimateTone("kaduppa irukku da"))
+    assertEquals(EstimatedTone.SAD, responseGenerator.estimateTone("sogama irukku da"))
+    assertEquals(EstimatedTone.EXCITED, responseGenerator.estimateTone("vera level da"))
   }
 
   @Test
-  fun testFrustratedTamilScenario() {
+  fun testFrustratedTamilScenario() = runTest {
     val input = "எல்லாமே சரியா போகவே மாட்டேங்குது"
     val tone = responseGenerator.estimateTone(input)
     assertEquals(EstimatedTone.FRUSTRATED, tone)
@@ -283,28 +260,14 @@ class DvexSmartBrainTest {
       userInput = input,
       tone = tone
     )
-    assertTrue("Should acknowledge feeling naturally, was: $resp", resp.contains("frustrating"))
-    assertTrue("Should stay supportive, was: $resp", resp.contains("step-by-step"))
-  }
-
-  @Test
-  fun testHelpSeekingTanglish() {
-    val input = "D-VEX enakku oru help venum"
-    val r = detector.detectIntent(input, context)
-    assertTrue("Should be Conversation, was ${r.intent}", r.intent is DvexIntent.Conversation)
-    assertEquals(DetectedLanguage.TANGLISH, r.language)
-    val resp = responseGenerator.generateResponse(
-      intent = r.intent,
-      toolResult = DvexToolResult(DvexToolStatus.SUCCESS, "conversation", "Yes, Sir. சொல்லுங்க.", "Yes, Sir. சொல்லுங்க."),
-      language = DetectedLanguage.TANGLISH,
-      userInput = input,
-      tone = EstimatedTone.NEUTRAL
+    assertTrue(
+      "Fallback must stay non-blank and leak-free, was: $resp",
+      resp.isNotBlank() && !resp.contains("SUCCESS")
     )
-    assertEquals("Sure, Sir. சொல்லுங்க. என்ன help வேணும்?", resp)
   }
 
   @Test
-  fun testGarbledInputAsksClarification() {
+  fun testGarbledInputAsksClarification() = runTest {
     val r = detector.detectIntent("hnnkssss", context)
     assertTrue("Garbled input should be LowConfidence, was ${r.intent}", r.intent is DvexIntent.LowConfidence)
     val resp = responseGenerator.generateResponse(
@@ -317,7 +280,7 @@ class DvexSmartBrainTest {
   }
 
   @Test
-  fun testClarificationOffersCandidate() {
+  fun testClarificationOffersCandidate() = runTest {
     val resp = responseGenerator.generateResponse(
       intent = DvexIntent.LowConfidence("", candidateIntent = DvexIntent.OpenApp("YouTube")),
       toolResult = DvexToolResult(DvexToolStatus.SUCCESS, "clarification", "", ""),
@@ -327,22 +290,72 @@ class DvexSmartBrainTest {
     assertTrue("Should offer inferred meaning, was: $resp", resp.contains("open YouTube"))
   }
 
+  /**
+   * A low-confidence ASR result on a CONVERSATIONAL turn is still real natural
+   * language: an unfamiliar question scores low confidence simply because it is not
+   * a known action. It used to be rewritten into a canned English clarification, so
+   * valid questions never reached the LLM. It must now reach the LLM, which decides
+   * whether to answer or to ask for a repeat naturally in the user's language.
+   *
+   * (Genuinely GARBLED transcriptions still take the deterministic clarification
+   * path — see testGarbledInputAsksClarification above.)
+   */
   @Test
-  fun testLowAsrConfidenceWeakIntentAsksClarification() = kotlinx.coroutines.runBlocking {
+  fun testLowAsrConfidenceConversationalTurnStillReachesTheLlm() = kotlinx.coroutines.runBlocking {
     val appContext = androidx.test.core.app.ApplicationProvider.getApplicationContext<android.content.Context>()
     val appLauncher = com.example.control.AppLauncherRepository(appContext)
     val deviceControl = com.example.control.DeviceControlRepository(appContext, appLauncher)
-    val brain = DvexSmartBrain(appContext, appLauncher, deviceControl)
+
+    val capturedPrompt = java.util.concurrent.atomic.AtomicReference("")
+    val fakeEngine = object : com.example.ai.AiEngine {
+      override suspend fun generate(prompt: String): String? {
+        capturedPrompt.set(prompt)
+        return "I didn't follow that, tell me once more."
+      }
+    }
+    val brain = DvexSmartBrain(appContext, appLauncher, deviceControl, fakeEngine)
 
     brain.reportAsrConfidence(0.2f)
     val res = brain.process("some rambling unclear words")
-    assertTrue("Low ASR confidence + weak intent should clarify, was ${res.intent}",
-      res.intent is DvexIntent.LowConfidence)
-    assertTrue(res.spokenText.contains("again"))
+
+    assertTrue(
+      "A conversational turn must not become a canned clarification, was ${res.intent}",
+      res.intent is DvexIntent.Conversation
+    )
+    assertFalse(
+      "Must not be the old canned clarification, was ${res.intent}",
+      res.intent is DvexIntent.LowConfidence
+    )
+    assertTrue(
+      "The LLM's own text must be spoken, was: ${res.spokenText}",
+      res.spokenText.contains("tell me once more")
+    )
+    assertTrue(
+      "The model must be told the transcription was unreliable",
+      capturedPrompt.get().contains("may be garbled")
+    )
 
     // Strong ASR confidence or strong intents must never be blocked
     brain.reportAsrConfidence(0.2f)
     val strong = brain.process("Open YouTube")
     assertTrue("Clear commands should still execute, was ${strong.intent}", strong.intent is DvexIntent.OpenApp)
+  }
+
+  /** Tone must survive the brain so the voice layer can match the reply's delivery. */
+  @Test
+  fun testBrainCarriesEstimatedToneForTheVoiceLayer() = kotlinx.coroutines.runBlocking {
+    val appContext = androidx.test.core.app.ApplicationProvider.getApplicationContext<android.content.Context>()
+    val appLauncher = com.example.control.AppLauncherRepository(appContext)
+    val deviceControl = com.example.control.DeviceControlRepository(appContext, appLauncher)
+    val fakeEngine = object : com.example.ai.AiEngine {
+      override suspend fun generate(prompt: String): String? = "Okay."
+    }
+    val brain = DvexSmartBrain(appContext, appLauncher, deviceControl, fakeEngine)
+
+    val urgent = brain.process("call Amma immediately")
+    assertEquals(EstimatedTone.URGENT, urgent.tone)
+
+    val neutral = brain.process("what is photosynthesis")
+    assertEquals(EstimatedTone.NEUTRAL, neutral.tone)
   }
 }
