@@ -1,5 +1,7 @@
 package com.example.control
 
+import android.app.usage.UsageEvents
+import android.app.usage.UsageStatsManager
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -7,6 +9,8 @@ import android.os.Build
 import android.util.Log
 import com.example.data.remote.ToolExecutionResult
 import com.example.data.remote.ToolResultStatus
+import com.example.permissions.DvexPermissionManager
+import kotlinx.coroutines.delay
 import java.util.Locale
 
 data class DiscoveredApp(
@@ -155,6 +159,90 @@ class AppLauncherRepository(private val context: Context) {
         toolName = "launch_app",
         message = "Launch failed: ${e.localizedMessage ?: "Unknown error"}"
       )
+    }
+  }
+
+  /** True when [packageName] is actually installed on this device. */
+  fun isPackageInstalled(packageName: String): Boolean {
+    return try {
+      context.packageManager.getPackageInfo(packageName, 0)
+      true
+    } catch (_: Exception) {
+      false
+    }
+  }
+
+  /**
+   * Best-effort REAL confirmation that [packageName] reached the foreground, read from
+   * the [UsageEvents] stream (requires the user-granted "Usage access" permission).
+   *
+   * Returns false when usage access is unavailable or the app never resumed within
+   * [timeoutMs] — callers must then report an honest, unverified outcome instead of
+   * claiming the app opened.
+   */
+  suspend fun verifyAppForeground(packageName: String, timeoutMs: Long = 2500L): Boolean {
+    if (!DvexPermissionManager.hasUsageAccess(context)) return false
+    val usageStatsManager =
+      context.getSystemService(Context.USAGE_STATS_SERVICE) as? UsageStatsManager
+        ?: return false
+
+    @Suppress("DEPRECATION")
+    val resumedType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+      UsageEvents.Event.ACTIVITY_RESUMED
+    } else {
+      UsageEvents.Event.MOVE_TO_FOREGROUND
+    }
+
+    val deadline = System.currentTimeMillis() + timeoutMs
+    while (System.currentTimeMillis() < deadline) {
+      val now = System.currentTimeMillis()
+      val events = usageStatsManager.queryEvents(now - 10_000L, now)
+      val event = UsageEvents.Event()
+      while (events.hasNextEvent()) {
+        events.getNextEvent(event)
+        if (event.packageName == packageName && event.eventType == resumedType) {
+          return true
+        }
+      }
+      delay(250L)
+    }
+    return false
+  }
+
+  /**
+   * Real foreground package read from the [UsageEvents] stream, or null when usage
+   * access is unavailable / no app has resumed recently. Used to VERIFY actions
+   * (did the requested app really come forward?) rather than assuming success.
+   */
+  fun foregroundPackageOrNull(windowMs: Long = 5_000L): String? {
+    if (!DvexPermissionManager.hasUsageAccess(context)) return null
+    val usageStatsManager =
+      context.getSystemService(Context.USAGE_STATS_SERVICE) as? UsageStatsManager ?: return null
+
+    @Suppress("DEPRECATION")
+    val resumedType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+      UsageEvents.Event.ACTIVITY_RESUMED
+    } else {
+      UsageEvents.Event.MOVE_TO_FOREGROUND
+    }
+
+    return try {
+      val now = System.currentTimeMillis()
+      val events = usageStatsManager.queryEvents(now - windowMs, now)
+      val event = UsageEvents.Event()
+      var latest: String? = null
+      var latestAt = -1L
+      while (events.hasNextEvent()) {
+        events.getNextEvent(event)
+        if (event.eventType == resumedType && event.timeStamp >= latestAt) {
+          latestAt = event.timeStamp
+          latest = event.packageName
+        }
+      }
+      latest
+    } catch (e: Exception) {
+      Log.w(TAG, "Foreground lookup failed: ${e.message}")
+      null
     }
   }
 

@@ -44,6 +44,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.model.NavItem
@@ -69,7 +70,9 @@ private data class SidebarItemDef(
 fun DvexLeftSidebar(
   selectedItem: NavItem,
   onItemSelected: (NavItem) -> Unit,
-  modifier: Modifier = Modifier
+  modifier: Modifier = Modifier,
+  /** Bottom clearance kept free for the compact INPUT band (dock + voice button). */
+  bottomInset: Dp = 0.dp
 ) {
   val items = listOf(
     SidebarItemDef(NavItem.HOME, Icons.Filled.Home),
@@ -87,7 +90,8 @@ fun DvexLeftSidebar(
       .fillMaxHeight()
       .background(DvexSurfaceDark)
       .border(1.dp, DvexBorderMuted, CutCornerShape(topEnd = 8.dp, bottomEnd = 8.dp))
-      .padding(vertical = 10.dp, horizontal = 4.dp),
+      .padding(vertical = 10.dp, horizontal = 4.dp)
+      .padding(bottom = bottomInset),
     horizontalAlignment = Alignment.CenterHorizontally,
     verticalArrangement = Arrangement.SpaceBetween
   ) {
@@ -106,7 +110,9 @@ fun DvexLeftSidebar(
 fun DvexRightSidebar(
   selectedItem: NavItem,
   onItemSelected: (NavItem) -> Unit,
-  modifier: Modifier = Modifier
+  modifier: Modifier = Modifier,
+  /** Bottom clearance kept free for the compact RESPONSE card. */
+  bottomInset: Dp = 0.dp
 ) {
   val items = listOf(
     SidebarItemDef(NavItem.AI, Icons.Filled.Psychology),
@@ -122,7 +128,8 @@ fun DvexRightSidebar(
       .fillMaxHeight()
       .background(DvexSurfaceDark)
       .border(1.dp, DvexBorderMuted, CutCornerShape(topStart = 8.dp, bottomStart = 8.dp))
-      .padding(vertical = 12.dp, horizontal = 4.dp),
+      .padding(vertical = 12.dp, horizontal = 4.dp)
+      .padding(bottom = bottomInset),
     horizontalAlignment = Alignment.CenterHorizontally,
     verticalArrangement = Arrangement.SpaceBetween
   ) {

@@ -6,6 +6,13 @@ package com.example.brain
  */
 enum class DvexToolStatus {
   SUCCESS,
+
+  /**
+   * The action was dispatched but its effect could NOT be confirmed. This is a
+   * first-class outcome: it is deliberately NOT a success, so no layer downstream
+   * can turn "we are not sure" into "done".
+   */
+  UNVERIFIED,
   FAILED,
   PERMISSION_REQUIRED,
   NOT_FOUND,

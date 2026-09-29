@@ -46,7 +46,8 @@ class SpeechRecognizerManager(private val context: Context) {
       _isListening.value = false
       isSessionActive = false
       onErrorCallback?.invoke("EMPTY_SPEECH")
-      stopListening()
+      // Session terminal: fully release the recognizer (cancel + destroy).
+      destroyRecognizer()
     }
   }
 
@@ -62,22 +63,42 @@ class SpeechRecognizerManager(private val context: Context) {
       return
     }
 
+    // Synchronous session guard: refuse a second session before any callback or
+    // recognizer state is touched, so startListening() is never issued twice while
+    // a session is open (exactly-once recognizer lifecycle).
+    if (isSessionActive || _isListening.value) {
+      Log.w(TAG, "Refusing startListening: a command session is already active")
+      onError("SESSION_ACTIVE")
+      return
+    }
+
     this.onResultCallback = onResult
     this.onErrorCallback = onError
     this.onPartialResultCallback = onPartialResult
 
     mainHandler.post {
       try {
+        // SESSION PROTECTION: never restart a recognizer mid-session. While a session
+        // is active (startListening -> onResults/onError), a second startListening()
+        // call is REFUSED — this guarantees at most ONE recognizer session exists and
+        // startListening() is never called repeatedly before onResults()/onError().
         if (isSessionActive) {
-          Log.w(TAG, "Previous session still active; destroying before starting new session")
-          destroyRecognizer()
-        } else {
-          destroyRecognizer()
+          Log.w(TAG, "Refusing startListening: command session already active (exactly-once protocol)")
+          return@post
         }
+
+        // No active session: tear down any leftover recognizer from a previous session.
+        destroyRecognizer()
 
         Log.i(TAG, "Listening started")
         _isListening.value = true
         isSessionActive = true
+
+        // NO volume/stream manipulation during a command session: D-VEX must never
+        // change another app's audio. The recognition service's own start/stop chime
+        // cannot be disabled through any public API, and hiding it by muting streams
+        // (STREAM_MUSIC included, as an earlier version did) is exactly the audio
+        // hack D-VEX must not perform. D-VEX itself emits no sound here.
 
         // 8-second safety watchdog
         mainHandler.removeCallbacks(timeoutRunnable)
@@ -135,6 +156,8 @@ class SpeechRecognizerManager(private val context: Context) {
               }
               Log.w(TAG, "SpeechRecognizer error: $errorMsg ($error)")
               onErrorCallback?.invoke(errorMsg)
+              // Session terminal: destroy the recognizer so no stale session can linger.
+              destroyRecognizer()
             }
 
             override fun onResults(results: Bundle?) {
@@ -152,6 +175,8 @@ class SpeechRecognizerManager(private val context: Context) {
                 Log.i(TAG, "Empty or blank recognition result")
                 onErrorCallback?.invoke("EMPTY_SPEECH")
               }
+              // Session terminal: destroy the recognizer so no stale session can linger.
+              destroyRecognizer()
             }
 
             override fun onPartialResults(partialResults: Bundle?) {
@@ -220,6 +245,11 @@ class SpeechRecognizerManager(private val context: Context) {
     }
   }
 
+  /**
+   * Fully releases the recognizer and pending session work. Called when the voice
+   * pipeline no longer needs STT (session closed, service shutdown) per the
+   * recognizer lifecycle contract.
+   */
   fun destroy() {
     mainHandler.removeCallbacks(timeoutRunnable)
     _isListening.value = false

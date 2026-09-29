@@ -31,6 +31,12 @@ class TextToSpeechManager(private val context: Context) {
 
   private var onSpeechDoneCallback: (() -> Unit)? = null
 
+  // Baseline prosody for the currently selected voice/language. Tone adaptation
+  // adjusts these rather than replacing them, so the language-specific voice
+  // character set by setupVoiceAndLanguage() is preserved.
+  private var baseSpeechRate = 0.96f
+  private var basePitch = 1.0f
+
   init {
     initTts()
   }
@@ -151,8 +157,10 @@ class TextToSpeechManager(private val context: Context) {
           // Calmer, measured intonation for Tamil:
           // Pitch: 0.98f (natural, warm pitch; prevents sharp robotic tone)
           // Speech rate: 0.93f (deliberate cadence allowing full phonetic articulation)
-          engine.setPitch(0.98f)
-          engine.setSpeechRate(0.93f)
+          basePitch = 0.98f
+          baseSpeechRate = 0.93f
+          engine.setPitch(basePitch)
+          engine.setSpeechRate(baseSpeechRate)
 
           val bestTamilVoice = selectBestTamilVoice(engine)
           if (bestTamilVoice != null) {
@@ -164,8 +172,10 @@ class TextToSpeechManager(private val context: Context) {
         } else {
           Log.w(TAG, "Tamil locale not fully supported by active TTS engine; using Indian English fallback")
           engine.setLanguage(Locale.forLanguageTag("en-IN"))
-          engine.setPitch(1.0f)
-          engine.setSpeechRate(0.95f)
+          basePitch = 1.0f
+          baseSpeechRate = 0.95f
+          engine.setPitch(basePitch)
+          engine.setSpeechRate(baseSpeechRate)
           val bestVoice = selectBestVoice(engine, Locale.forLanguageTag("en-IN"))
           if (bestVoice != null) {
             engine.voice = bestVoice
@@ -179,8 +189,10 @@ class TextToSpeechManager(private val context: Context) {
         }
 
         // Calmer, pleasant, conversational pace for English
-        engine.setPitch(1.0f)
-        engine.setSpeechRate(0.96f)
+        basePitch = 1.0f
+        baseSpeechRate = 0.96f
+        engine.setPitch(basePitch)
+        engine.setSpeechRate(baseSpeechRate)
 
         val bestVoice = selectBestVoice(engine, targetLocale)
         if (bestVoice != null) {
@@ -311,7 +323,13 @@ class TextToSpeechManager(private val context: Context) {
    * Auto-detects Tamil script and speaks in Tamil via Tamil TTS.
    * Supports Tanglish via Indian English voice.
    */
-  fun speak(text: String, languageCode: String? = null, onDone: (() -> Unit)? = null) {
+  fun speak(
+    text: String,
+    languageCode: String? = null,
+    /** Tone name (EstimatedTone.name) applied as a subtle prosody adjustment. */
+    toneCode: String? = null,
+    onDone: (() -> Unit)? = null
+  ) {
     if (!isInitialized || tts == null) {
       Log.w(TAG, "TTS not ready; falling back immediately")
       onDone?.invoke()
@@ -337,24 +355,19 @@ class TextToSpeechManager(private val context: Context) {
 
         val treatAsTamil = containsTamil || isExplicitTamil
 
-        if (treatAsTamil) {
-          setupVoiceAndLanguage(engine, Locale.forLanguageTag("ta-IN"), isTamil = true)
-          val textToSpeak = sanitizeTextForSpeech(text)
-          speakUtterance(engine, textToSpeak)
-        } else if (isExplicitTanglish) {
-          // Explicit Tanglish spoken with Indian English voice for natural phonetics
-          setupVoiceAndLanguage(engine, Locale.forLanguageTag("en-IN"), isTamil = false)
-          val textToSpeak = sanitizeTextForSpeech(text)
-          speakUtterance(engine, textToSpeak)
-        } else {
-          val locale = when (languageCode?.lowercase(Locale.ROOT)) {
-            "tanglish", "en-in" -> Locale.forLanguageTag("en-IN")
-            else -> Locale.US
-          }
-          setupVoiceAndLanguage(engine, locale, isTamil = false)
-          val textToSpeak = sanitizeTextForSpeech(text)
-          speakUtterance(engine, textToSpeak)
+        // Tamil script -> Tamil voice. Explicit Tanglish (or mixed Tamil-English)
+        // -> Indian English voice, which pronounces romanized Tamil naturally.
+        // Everything else -> US English.
+        val locale = when {
+          treatAsTamil -> Locale.forLanguageTag("ta-IN")
+          isExplicitTanglish -> Locale.forLanguageTag("en-IN")
+          else -> Locale.US
         }
+        setupVoiceAndLanguage(engine, locale, isTamil = treatAsTamil)
+        // Applied AFTER the language baseline so tone modifies the chosen voice
+        // instead of overriding its character.
+        applyTone(engine, toneCode)
+        speakUtterance(engine, sanitizeTextForSpeech(text))
       }
     } catch (e: Exception) {
       Log.e(TAG, "Error speaking utterance", e)
@@ -362,6 +375,47 @@ class TextToSpeechManager(private val context: Context) {
       onDone?.invoke()
     }
   }
+
+  /**
+   * Applies subtle tone-adaptive prosody.
+   *
+   * Android's TextToSpeech API exposes NO dependable SSML / prosody control —
+   * SSML tags are read literally or silently dropped by installed engines — so the
+   * only supported levers are setSpeechRate and setPitch, plus punctuation in the
+   * text itself. This maps the estimated tone onto small, bounded multipliers of
+   * the language baseline, which reads as a person naturally adjusting delivery
+   * rather than a theatrical voice swap.
+   *
+   * Unknown or null tone leaves the baseline untouched.
+   */
+  private fun applyTone(engine: TextToSpeech, toneCode: String?) {
+    val (rateFactor, pitchOffset) = when (toneCode?.uppercase(Locale.ROOT)) {
+      "URGENT" -> 1.06f to 0.00f        // prompt, steady, no drama
+      "EXCITED" -> 1.07f to 0.03f       // a touch quicker and brighter
+      "HAPPY" -> 1.03f to 0.02f         // warm lift
+      "CONFUSED" -> 0.92f to 0.00f      // slower and clearer
+      "FRUSTRATED" -> 0.95f to -0.02f   // calm, grounded
+      "SAD" -> 0.90f to -0.04f          // softer and slower
+      else -> 1.00f to 0.00f
+    }
+    try {
+      val rate = clamp(baseSpeechRate * rateFactor, RATE_MIN, RATE_MAX)
+      val pitch = clamp(basePitch + pitchOffset, PITCH_MIN, PITCH_MAX)
+      engine.setSpeechRate(rate)
+      engine.setPitch(pitch)
+      Log.i(
+        TAG,
+        "Tone prosody: tone=${toneCode ?: "NEUTRAL"} " +
+          "rate=${String.format(Locale.ROOT, "%.2f", rate)} " +
+          "pitch=${String.format(Locale.ROOT, "%.2f", pitch)}"
+      )
+    } catch (e: Throwable) {
+      Log.w(TAG, "Could not apply tone prosody: ${e.message}")
+    }
+  }
+
+  private fun clamp(value: Float, min: Float, max: Float): Float =
+    if (value < min) min else if (value > max) max else value
 
   private fun speakUtterance(engine: TextToSpeech, textToSpeak: String) {
     val utteranceId = UUID.randomUUID().toString()
@@ -423,5 +477,11 @@ class TextToSpeechManager(private val context: Context) {
   companion object {
     private const val TAG = "[D-VEX][TTS]"
     private const val GOOGLE_TTS_PACKAGE = "com.google.android.tts"
+
+    // Bounded so tone adaptation can never produce an unnatural or unintelligible voice.
+    private const val RATE_MIN = 0.80f
+    private const val RATE_MAX = 1.15f
+    private const val PITCH_MIN = 0.90f
+    private const val PITCH_MAX = 1.10f
   }
 }

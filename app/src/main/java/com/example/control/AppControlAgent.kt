@@ -48,7 +48,7 @@ class AppControlAgent(
     if (!DvexPermissionManager.isAccessibilityServiceEnabled(context) ||
         !DvexAccessibilityService.isEnabled(context)) {
       return AppActionResult.PermissionRequired(
-        "Sir, Messaging app control-க்கு Accessibility அனுமதி தேவை. Settings-ல் D-VEX Accessibility-யை enable பண்ணுங்க."
+        "Messaging app control-க்கு Accessibility அனுமதி தேவை. Settings-ல் D-VEX Accessibility-யை enable பண்ணுங்க."
       )
     }
 
@@ -56,15 +56,15 @@ class AppControlAgent(
     val searchResult = contactResolver.findContact(recipientQuery)
     val contact = when (searchResult) {
       is ContactSearchResult.PermissionDenied -> {
-        return AppActionResult.PermissionRequired("Sir, Contacts அனுமதி தேவை.")
+        return AppActionResult.PermissionRequired("Contacts அனுமதி தேவை.")
       }
       is ContactSearchResult.NotFound -> {
-        return AppActionResult.Failed("Sir, ${searchResult.cleanQuery} contact கிடைக்கல.")
+        return AppActionResult.Failed("${searchResult.cleanQuery} contact கிடைக்கல.")
       }
       is ContactSearchResult.Multiple -> {
         val names = searchResult.matches.map { it.name }.distinct()
         return AppActionResult.Ambiguous(
-          "Sir, ${searchResult.cleanQuery}-la multiple contacts irukku: ${names.joinToString(", ")}. Which one should I select?",
+          "${searchResult.cleanQuery}-la multiple contacts irukku: ${names.joinToString(", ")}. Which one should I select?",
           names
         )
       }
@@ -82,27 +82,27 @@ class AppControlAgent(
     }
 
     if (!opened) {
-      return AppActionResult.Failed("Sir, messaging app-ஐ திறக்க முடியவில்லை.")
+      return AppActionResult.Failed("messaging app-ஐ திறக்க முடியவில்லை.")
     }
 
     // Wait for the conversation window and find the message input field
     val inputField = waitForMessageInputField(MAX_WAIT_MS)
     if (inputField == null) {
       Log.w(TAG, "Could not find editable message input field in active conversation")
-      return AppActionResult.Failed("Sir, conversation input field கிடைக்கல.")
+      return AppActionResult.Failed("conversation input field கிடைக்கல.")
     }
 
     // Enter the message text
     val injected = DvexAccessibilityService.setTextInNode(inputField, messageText)
     if (!injected) {
       Log.w(TAG, "Failed to enter text into input field")
-      return AppActionResult.Failed("Sir, message type பண்ண முடியவில்லை.")
+      return AppActionResult.Failed("message type பண்ண முடியவில்லை.")
     }
 
     Log.i(TAG, "Message prepared in app for ${contact.name}: '$messageText'")
 
     // Return confirmation requirement
-    val prompt = "Okay Sir. ${contact.name}-ku '$messageText' anuppattuma?"
+    val prompt = "${contact.name}-ku '$messageText' anuppattuma?"
     return AppActionResult.NeedsConfirmation(
       prompt = prompt,
       contactName = contact.name,
@@ -115,21 +115,21 @@ class AppControlAgent(
    */
   suspend fun executeSendAndVerify(contactName: String, messageText: String): AppActionResult {
     if (!DvexAccessibilityService.isEnabled(context)) {
-      return AppActionResult.PermissionRequired("Sir, Accessibility service connect aagala.")
+      return AppActionResult.PermissionRequired("Accessibility service connect aagala.")
     }
 
     // 1. Locate the send button in the UI
     val sendButton = findSendButton()
     if (sendButton == null) {
       Log.w(TAG, "Send button not found in UI")
-      return AppActionResult.Failed("Sir, Send button கண்டுபிடிக்க முடியவில்லை.")
+      return AppActionResult.Failed("Send button கண்டுபிடிக்க முடியவில்லை.")
     }
 
     // 2. Click the send button
     val clicked = DvexAccessibilityService.clickNode(sendButton)
     if (!clicked) {
       Log.w(TAG, "Clicking send button failed")
-      return AppActionResult.Failed("Sir, Send button-ஐ அழுத்த முடியவில்லை.")
+      return AppActionResult.Failed("Send button-ஐ அழுத்த முடியவில்லை.")
     }
 
     Log.i(TAG, "Clicked Send button, waiting for UI confirmation...")
@@ -138,11 +138,11 @@ class AppControlAgent(
     val verified = verifySendSuccess(messageText, timeoutMs = 4000L)
     return if (verified) {
       Log.i(TAG, "Send verification confirmed.")
-      AppActionResult.Success("Okay, Sir. Message sent.")
+      AppActionResult.Success("Message sent.")
     } else {
       Log.w(TAG, "Could not verify message dispatch in UI")
       // Still report accurate state — do not make up success
-      AppActionResult.Failed("Sir, message send aana confirmation kidaikkala.")
+      AppActionResult.Failed("message send aana confirmation kidaikkala.")
     }
   }
 

@@ -49,6 +49,23 @@ class AndroidSpeechWakeWordDetector(
   private var lastTriggerTimeMs = 0L
   private val TRIGGER_DEBOUNCE_MS = 1200L
 
+  // NO AUDIO-VOLUME MANIPULATION HERE.
+  //
+  // An earlier version muted the notification/system streams around every wake-word
+  // session to hide the Google recognition service's start/stop chime. That was
+  // removed because it changed OTHER apps' stream volumes — and since wake listening
+  // reopens a recognizer session roughly once a second, it did so continuously for
+  // as long as D-VEX was in the background — while never suppressing the chime at
+  // all on builds that play it on STREAM_MUSIC.
+  //
+  // D-VEX owns no audio-output API in this path (no ToneGenerator, SoundPool,
+  // MediaPlayer, Ringtone or AudioTrack), requests NO audio focus, and never touches
+  // STREAM_MUSIC or any other stream's volume. Background wake monitoring is
+  // therefore completely silent from D-VEX's side and leaves the user's
+  // Instagram/Spotify/YouTube audio untouched. A recognition-service chime can only
+  // be removed for real by swapping this detector for an offline wake-word engine
+  // behind the [WakeWordDetector] interface.
+
   @Volatile private var isAudioSuppressed = false
   @Volatile private var lastSpokenText = ""
   @Volatile private var lastSpokenTimestampMs = 0L
@@ -237,6 +254,8 @@ class AndroidSpeechWakeWordDetector(
         putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 5000L)
         putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 5000L)
         putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS, 2000L)
+        // Ask the recognition service to keep its own feedback quiet where supported.
+        putExtra("android.speech.extra.SUPPRESS_CONFIRMATION", true)
       }
       activeRecognizer.startListening(intent)
     } catch (e: Exception) {
@@ -340,6 +359,28 @@ class WakeWordManager(
 
   private var onTriggerListener: ((String) -> Unit)? = null
 
+  /**
+   * Hard trigger gate (voice-session lifecycle): when it returns false, wake-word
+   * triggers are dropped before they can reach the pipeline. The repository closes
+   * this gate while a wake/command session is active, so late detector callbacks can
+   * never open a duplicate session or fire while the command recognizer is listening.
+   */
+  private var triggerGate: (() -> Boolean)? = null
+
+  fun setTriggerGate(gate: (() -> Boolean)?) {
+    this.triggerGate = gate
+  }
+
+  private fun shouldAcceptTrigger(): Boolean {
+    val gate = triggerGate ?: return true
+    return try {
+      gate()
+    } catch (e: Exception) {
+      Log.w(TAG, "Trigger gate threw; failing open", e)
+      true
+    }
+  }
+
   fun isRunning(): Boolean = detector.isRunning()
 
   fun setOnTriggerListener(listener: (String) -> Unit) {
@@ -385,6 +426,12 @@ class WakeWordManager(
     Log.i(TAG, "Wake word listening started (local on-device engine)")
     detector.start(
       onTrigger = { keyword ->
+        // Session gate: while a wake/command voice session is active, any late or
+        // duplicate detector callback is dropped here before reaching the pipeline.
+        if (!shouldAcceptTrigger()) {
+          Log.w(TAG, "Wake trigger ignored: voice-session gate closed (command may be listening)")
+          return@start
+        }
         _state.value = WakeWordState.Triggered(keyword)
         Log.i(TAG, "Wake word detected: \"$keyword\"")
         onTriggerListener?.invoke(keyword)
@@ -403,6 +450,11 @@ class WakeWordManager(
   }
 
   fun simulateTrigger(keyword: String = "D-VEX") {
+    // Same gate as real detections so simulated triggers respect the session state.
+    if (!shouldAcceptTrigger()) {
+      Log.w(TAG, "Simulated wake trigger ignored: voice-session gate closed")
+      return
+    }
     _state.value = WakeWordState.Triggered(keyword)
     Log.i(TAG, "Simulated wake word trigger: $keyword")
     onTriggerListener?.invoke(keyword)

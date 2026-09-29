@@ -1,30 +1,118 @@
 name: Build and Release APK
+
+# Runs on every push to main (so a Freebuff Changes-panel save triggers it
+# automatically) and can be started by hand from the Actions tab.
 on:
   push:
     branches: [ main ]
   workflow_dispatch:
 
+# Required so the workflow can create/update the GitHub Release.
 permissions:
   contents: write
+
+# Serialise runs: two overlapping builds would race to update the same release.
+concurrency:
+  group: dvex-apk-build
+  cancel-in-progress: false
 
 jobs:
   build:
     runs-on: ubuntu-latest
+
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
+      - name: Checkout main
+        uses: actions/checkout@v4
+
+      # AGP 9.x requires JDK 17 (Gradle 9.1+ is the minimum for this project).
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
         with:
-          distribution: 'temurin'
+          distribution: temurin
           java-version: '17'
-      - name: Setup Gradle
+
+      # Installs the command-line tools and accepts the SDK licences, which lets
+      # AGP auto-download the exact platform/build-tools the project requests
+      # (compileSdk 36.1, build-tools 36.0.0).
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v4
+
+      - name: Accept Android SDK licences
+        run: yes | sdkmanager --licenses > /dev/null 2>&1 || true
+
+      - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
+
+      - name: Make Gradle wrapper executable
+        run: chmod +x ./gradlew
+
+      # debug.keystore is gitignored, so the debug signing config needs one here.
       - name: Generate debug keystore
         run: |
-          keytool -genkey -v -keystore debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
-      - name: Build APK
-        run: gradle assembleDebug -Dorg.gradle.jvmargs="-Djava.awt.headless=true"
-      - name: Create Release with APK
+          keytool -genkeypair -v \
+            -keystore debug.keystore \
+            -storepass android \
+            -keypass android \
+            -alias androiddebugkey \
+            -keyalg RSA \
+            -keysize 2048 \
+            -validity 10000 \
+            -dname "CN=Android Debug,O=Android,C=US"
+
+      # The key is read by app/build.gradle.kts via System.getenv("GEMINI_API_KEY")
+      # (first) or the Secrets plugin's .env (second). The value is never echoed.
+      - name: Configure Gemini API key
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          if [ -n "${GEMINI_API_KEY:-}" ]; then
+            printf 'GEMINI_API_KEY=%s\n' "$GEMINI_API_KEY" > .env
+            echo "GEMINI_API_KEY supplied from the repository secret."
+          else
+            echo "::warning title=GEMINI_API_KEY is not set::Add the repository secret GEMINI_API_KEY, otherwise this APK ships without an embedded key and D-VEX falls back to deterministic replies."
+          fi
+
+      - name: Unit tests + debug APK
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: ./gradlew :app:testDebugUnitTest :app:assembleDebug --no-daemon
+
+      - name: Verify APK exists
+        run: |
+          test -f app/build/outputs/apk/debug/app-debug.apk
+          ls -l app/build/outputs/apk/debug/app-debug.apk
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dvex-debug-apk
+          path: app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+
+      # Kept for diagnosing a red build (JUnit/HTML reports).
+      - name: Upload test reports on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dvex-test-reports
+          path: app/build/reports/tests/
+          if-no-files-found: ignore
+
+      # Only runs when every previous step succeeded, so a failed build can never
+      # publish a release.
+      - name: Publish build-64 release
+        if: success()
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: build-${{ github.run_number }}
+          tag_name: build-64
+          name: D-VEX Build 64
+          make_latest: true
+          draft: false
+          prerelease: false
           files: app/build/outputs/apk/debug/app-debug.apk
+          body: |
+            D-VEX debug APK built by GitHub Actions.
+
+            - Commit: ${{ github.sha }}
+            - Trigger: ${{ github.event_name }} (run #${{ github.run_number }})
+            - Command: `./gradlew :app:testDebugUnitTest :app:assembleDebug --no-daemon`

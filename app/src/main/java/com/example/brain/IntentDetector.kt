@@ -61,7 +61,7 @@ class IntentDetector {
       Log.d(TAG, "Garbled/uncertain transcription detected; requesting clarification")
       return DetectionResult(
         DvexIntent.LowConfidence(
-          clarificationPrompt = "Sorry, Sir, I didn't quite catch that. Could you say it again?",
+          clarificationPrompt = "Sorry, I didn't quite catch that. Could you say it again?",
           candidateIntent = null
         ),
         0.3f,
@@ -82,6 +82,14 @@ class IntentDetector {
     val hardwareUtility = parseHardwareUtility(cleanText, lower)
     if (hardwareUtility != null) {
       return DetectionResult(hardwareUtility, 0.98f, language, cleanText)
+    }
+
+    // 1.5 Phase A: YouTube video play ("youtube la <q> podu", "play <q> on youtube",
+    // "<q> video podu") — must run BEFORE generic app-open parsing, which would
+    // otherwise match "youtube" as a bare OpenApp.
+    val ytPlayQuery = parseYoutubePlay(cleanText, lower)
+    if (ytPlayQuery != null && ytPlayQuery.isNotBlank()) {
+      return DetectionResult(DvexIntent.PlayYoutubeVideo(query = ytPlayQuery), 0.95f, language, cleanText)
     }
 
     // 2. Multi-Step Commands (e.g., "Open YouTube and search for tractor videos")
@@ -144,33 +152,240 @@ class IntentDetector {
     return DetectionResult(DvexIntent.Conversation(cleanText), 0.70f, language, cleanText)
   }
 
-  // --- Multi-Step Commands ---
+  // --- Multi-Step Commands (Action Planner) ---
+  /**
+   * Plans a two-step executable action chain (open target app, then search).
+   *
+   * Recognizes:
+   *  - English connectors: "Open YouTube and search for Spider-Man".
+   *  - Tanglish/Tamil chains: "YouTube open panni Spider-Man search pannu",
+   *    "YouTube open பண்ணி Spider-Man search பண்ணு".
+   *  - Sentence/comma separated commands: "YouTube open pannu. Spider-Man search pannu."
+   *
+   * A chain is only planned when BOTH halves are real commands (a launchable app
+   * first, a search second) — never from ambiguous conversational text.
+   */
   private fun parseMultiStepCommand(rawText: String, lower: String): DvexIntent? {
-    // "Open YouTube and search for tractor videos"
-    // "Launch Chrome and search for android news"
-    val andSplit = when {
-      lower.contains(" and search for ") -> " and search for "
-      lower.contains(" and search ") -> " and search "
-      lower.contains(" and find ") -> " and find "
-      else -> null
+    // 1. Explicit connectors (English "and search" + Tanglish/Tamil "panni").
+    val connectors = listOf(
+      " and search for ", " and search ", " and find ", " then search for ", " then search ",
+      " panni ", " pannitu ", " pannittu ", " பண்ணி ", "பண்ணி ", " பண்ணிட்டு "
+    )
+    for (connector in connectors) {
+      val splitIndex = lower.indexOf(connector)
+      if (splitIndex < 0) continue
+      val firstPart = rawText.substring(0, splitIndex).trim()
+      val secondPart = rawText.substring(splitIndex + connector.length).trim()
+      val connectorCarriesSearchVerb =
+        connector.contains("search") || connector.contains("find")
+      buildMultiStep(firstPart, secondPart, connectorCarriesSearchVerb)?.let { return it }
     }
 
-    if (andSplit != null) {
-      val splitIndex = lower.indexOf(andSplit)
-      if (splitIndex >= 0) {
-        val firstPart = rawText.substring(0, splitIndex).trim()
-        val searchQuery = rawText.substring(splitIndex + andSplit.length).trim()
-
-        val appTarget = extractAppName(firstPart)
-        if (appTarget.isNotEmpty() && searchQuery.isNotEmpty()) {
-          return DvexIntent.MultiStep(
-            first = DvexIntent.OpenApp(appTarget),
-            second = DvexIntent.SearchWeb(searchQuery)
-          )
-        }
+    // 2. Sentence / comma separated commands: "YouTube open pannu. Spider-Man search pannu."
+    val segments = rawText.split(Regex("[.,;\n]+"))
+      .map { it.trim() }
+      .filter { it.isNotEmpty() }
+    if (segments.size >= 2) {
+      for (i in 0 until segments.size - 1) {
+        buildMultiStep(segments[i], segments[i + 1], secondIsQuery = false)?.let { return it }
       }
     }
+
     return null
+  }
+
+  /** Builds an executable two-step plan when BOTH halves resolve to real commands. */
+  private fun buildMultiStep(
+    firstPart: String,
+    secondPart: String,
+    secondIsQuery: Boolean
+  ): DvexIntent? {
+    if (firstPart.isBlank() || secondPart.isBlank()) return null
+
+    val appTarget = extractAppName(stripCommandVerb(firstPart))
+    if (appTarget.isEmpty()) return null
+
+    val query = if (secondIsQuery) {
+      normalizeSearchQuery(secondPart)
+    } else {
+      extractSearchQuery(secondPart) ?: return null
+    }
+    if (query.isBlank() || query.equals(appTarget, ignoreCase = true)) return null
+
+    // The router resolves the target-specific real mechanism: a YouTube app search
+    // for YouTube, a maps search for Maps, a browser search otherwise.
+    return DvexIntent.MultiStep(
+      first = DvexIntent.OpenApp(appTarget),
+      second = DvexIntent.SearchWeb(query)
+    )
+  }
+
+  /** Removes a trailing command verb so "YouTube open panni" → "YouTube open". */
+  private fun stripCommandVerb(text: String): String {
+    return text.trim()
+      .replace(
+        Regex(
+          "\\s+(pannu|panni|pannunga|pannitu|pannittu|பண்ணு|பண்ணி|பண்ணுங்க|podu|podungo)$",
+          RegexOption.IGNORE_CASE
+        ),
+        ""
+      )
+      .trim()
+  }
+
+  /**
+   * Extracts the search text from a search command in English, Tanglish or Tamil.
+   * Handles leading verbs ("search Spider-Man") and trailing verbs
+   * ("Spider-Man search pannu"). Returns null when no search command is present.
+   */
+  private fun extractSearchQuery(text: String): String? {
+    val raw = text.trim()
+
+    // Leading-verb form: "search for X", "search X", "google X", "find X".
+    val leading = raw.replace(
+      Regex(
+        "^(can you please |can you |please |hey d-?vex[, ]*)?(search the web for|search google for|search for|search|find|google)\\s+",
+        RegexOption.IGNORE_CASE
+      ),
+      ""
+    ).trim()
+    if (leading != raw && leading.isNotBlank()) {
+      return normalizeSearchQuery(leading)
+    }
+
+    // Trailing-verb form (Tanglish/Tamil): "X search pannu", "X-ai search panni".
+    val trailingRegex = Regex(
+      "\\s*(?:-?a|-?ai|-?ஐ)?\\s*(search pannunga|search pannu|search panni|search பண்ணுங்க|search பண்ணு|search பண்ணி|தேடுங்க|தேடு)$",
+      RegexOption.IGNORE_CASE
+    )
+    if (trailingRegex.containsMatchIn(raw)) {
+      val trailing = raw.replace(trailingRegex, "").trim()
+      if (trailing.isNotBlank()) return normalizeSearchQuery(trailing)
+    }
+
+    return null
+  }
+
+  private fun normalizeSearchQuery(q: String): String {
+    return q.trim()
+      .trim('-', ' ', ',', '.', '!', '?')
+      .replace(Regex("(-a|-ai)$", RegexOption.IGNORE_CASE), "")
+      .trim()
+  }
+
+  /**
+   * Phase A: parses an alarm time from an English/Tanglish/Tamil-mixed utterance
+   * fragment (wake-word and the word "alarm" already removed by the caller).
+   *
+   * Supported forms: "7", "7:30", "7.30", "7 30", "7am/pm", "6 o'clock",
+   * "7 mani", "7 mani ku", "half past 6", "saa arai 7" (Tanglish "half past").
+   * Returns (hour, minute) with am/pm applied when spoken; null when NO credible
+   * time token exists in the fragment — the caller must then ask for a clear time
+   * instead of guessing.
+   */
+  private fun parseAlarmTime(fragment: String): Pair<Int, Int>? {
+    val clean = fragment.trim()
+    if (clean.isBlank()) return null
+
+    val lowerFrag = clean.lowercase(Locale.ROOT)
+
+    // "half past X" / "X-thara-ppadhu" style: 30 minutes past hour X.
+    val halfPast = Regex("(?:half past|saa arai|saaarai|arai mani)\\s*(\\d{1,2})").find(lowerFrag)
+    if (halfPast != null) {
+      val h = halfPast.groupValues[1].toIntOrNull()
+      if (h != null && h in 1..23) return h to 30
+    }
+    val halfPastReversed = Regex("(\\d{1,2})\\s*(?:mani arai|arai mani)").find(lowerFrag)
+    if (halfPastReversed != null) {
+      val h = halfPastReversed.groupValues[1].toIntOrNull()
+      if (h != null && h in 1..23) return h to 30
+    }
+
+    // Primary numeric time: "7", "7:30", "7.30", "7 30", "7:30 pm", "7 am",
+    // "7 o'clock", "7 mani", "7 mani ku". A trailing word boundary prevents
+    // matching stray digits inside unrelated words.
+    val numeric = Regex("(?:at|for|ku|க்கு|mani|மணி)?\\s*(\\d{1,2})(?:[:.](\\d{2})|\\s+(\\d{2}))?\\s*(am|pm|a[.]m|p[.]m|o'?clock|mani|மணி)?", RegexOption.IGNORE_CASE)
+      .find(lowerFrag)
+    if (numeric != null) {
+      val hour = numeric.groupValues[1].toIntOrNull()
+      val colonMinute = numeric.groupValues[2].toIntOrNull()
+      val spaceMinute = numeric.groupValues[3].toIntOrNull()
+      val minute = colonMinute ?: spaceMinute ?: 0
+      val ampmRaw = numeric.groupValues[4].lowercase(Locale.ROOT)
+      if (hour != null && hour in 1..23 && minute in 0..59) {
+        var h = hour
+        val isPm = ampmRaw.startsWith("p")
+        val isAm = ampmRaw.startsWith("a")
+        if (isPm && h < 12) h += 12
+        if (isAm && h == 12) h = 0
+        return h to minute
+      }
+    }
+
+    // Tamil-script numerals are not expected from ASR (it returns Latin digits);
+    // anything else here genuinely has no parseable time.
+    return null
+  }
+
+  /**
+   * Phase A: detects a "play <query> on youtube" style request and extracts the
+   * search query. Handles English ("play <q> on youtube", "youtube la <q> podu"),
+   * Tanglish ("youtube la <q> podu/paadu", "<q> video podu youtube la"), and bare
+   * "<q> video podu" (YouTube implied by the context of playing a video).
+   * Returns the extracted query, or null when the utterance is not a YT-play phrase.
+   */
+  private fun parseYoutubePlay(rawText: String, lower: String): String? {
+    val hasYoutubeWord = lower.contains("youtube") || lower.contains("you tube") || lower.contains("யூடியூப்") || lower.contains("யூ டியூப்")
+
+    // "play <query> on youtube" / "play <query> in youtube"
+    Regex("play\\s+(.+?)\\s+on\\s+youtube").find(lower)?.let { return normalizeYtQuery(it.groupValues[1]) }
+    Regex("play\\s+(.+?)\\s+in\\s+youtube").find(lower)?.let { return normalizeYtQuery(it.groupValues[1]) }
+
+    // "youtube la <query> podu/paadu/play pannu" (Tanglish)
+    Regex("(?:youtube|you tube)\\s*(?:la|lay|le)?\\s*(.+?)\\s*(?:podu|podungo|paadu|paadungo|play pannu|play)").find(lower)
+      ?.let { return normalizeYtQuery(it.groupValues[1]) }
+
+    // "<query> video(s) podu" / "<query> video paadu" (YouTube implied)
+    if (!hasYoutubeWord) {
+      Regex("(.+?)\\s*videos?\\s*(?:podu|podungo|paadu|kaatu)").find(lower)?.let { return normalizeYtQuery(it.groupValues[1]) }
+    }
+
+    // "youtube la <query> search pannu" (Tanglish search inside the YouTube app).
+    // Guarded: multi-step chains ("youtube open panni X search pannu") must fall
+    // through to the planner, not become an accidental single YT-play query.
+    if (hasYoutubeWord) {
+      Regex("(?:youtube|you tube)\\s*(?:la|lay|le)?\\s*(.+?)\\s*(?:search\\s+pannu|search\\s+panni|search\\s+pannunga|தேடு)")
+        .find(lower)?.let {
+          val q = normalizeYtQuery(it.groupValues[1])
+          val commandResidue = q.startsWith("open") || q.startsWith("and ") ||
+              q.contains(" and ") || q.startsWith("search") || q.contains("பண்ணி")
+          if (q.isNotBlank() && !commandResidue) return q
+        }
+    }
+
+    // "youtube la <query>" with nothing else (query directly after the YT word).
+    // Guarded: command-residue continuations ("open youtube and search for X",
+    // "open youtube", "youtube search for X") must fall through to the multi-step
+    // / app-open parsers, not become accidental YT-play queries.
+    if (hasYoutubeWord) {
+      Regex("(?:youtube|you tube)\\s*(?:la|lay|le)?\\s*(.+)").find(lower)?.let {
+        val q = normalizeYtQuery(it.groupValues[1])
+        val commandResidue = q.startsWith("and ") || q.startsWith("open") ||
+            q.startsWith("search") || q.startsWith("in ") || q.startsWith("on ") ||
+            q.contains(" and ") || q.contains("search") || q.contains("podu")
+        if (q.isNotBlank() && !commandResidue) return q
+      }
+    }
+
+    return null
+  }
+
+  /** Strips command residue from the extracted YT query; keeps the search text. */
+  private fun normalizeYtQuery(q: String): String {
+    return q.trim()
+      .replace(Regex("^(the|a|an)\\s+", RegexOption.IGNORE_CASE), "")
+      .replace(Regex("\\s+(video|song|paatu|podu|paadungo|pannu|pannunga)$", RegexOption.IGNORE_CASE), "")
+      .trim(' ', ',', '.', '!', '?')
   }
 
   // --- Hardware Utility (Flashlight, Alarm, Timer) ---
@@ -186,18 +401,15 @@ class IntentDetector {
 
     // Alarm
     if (lower.contains("alarm") || lower.contains("wake me up") || lower.contains("எழுப்பு") || lower.contains("அலாரம்")) {
-      // Find time: e.g. "6 am", "7:30 pm", "7 30", "6 o'clock"
-      val timeRegex = Regex("(\\d{1,2})(?::(\\d{2}))?\\s*(am|pm)?", RegexOption.IGNORE_CASE)
-      val match = timeRegex.find(lower.replace("alarm", "").replace("for", ""))
-      if (match != null) {
-        var hour = match.groupValues[1].toIntOrNull() ?: 7
-        val minute = match.groupValues[2].toIntOrNull() ?: 0
-        val ampm = match.groupValues[3].lowercase(Locale.ROOT)
-        if (ampm == "pm" && hour < 12) hour += 12
-        if (ampm == "am" && hour == 12) hour = 0
-        return DvexIntent.SetAlarm(hour = hour, minute = minute, message = "D-VEX Alarm")
-      }
-      return DvexIntent.SetAlarm(hour = 7, minute = 0, message = "D-VEX Alarm")
+      // Phase A honesty contract: parse the time from the utterance; if no time can
+      // be parsed, return a null-hour/minute SetAlarm intent and let the router ask
+      // the user to repeat with a clear time — NEVER guess a default like 7:00.
+      val parsed = parseAlarmTime(lower.replace("alarm", " ").replace("அலாரம்", " ").replace("எழுப்பு", " "))
+      return DvexIntent.SetAlarm(
+        hour = parsed?.first,
+        minute = parsed?.second,
+        message = "D-VEX Alarm"
+      )
     }
 
     // Timer
@@ -457,6 +669,8 @@ class IntentDetector {
         lower.contains("weather epdi irukku") ||
         lower.contains("வானிலை")
     ) {
+      // NOTE: "weather"/"temperature" keywords above intentionally keep generic
+      // utterances flowing here so no city = device location is used downstream.
       val isTomorrow = lower.contains("tomorrow") || lower.contains("naalai") || lower.contains("naalaiku") || lower.contains("நாளை")
       val knownCities = listOf(
         "chennai", "coimbatore", "madurai", "salem", "trichy", "tiruchirappalli", "tirunelveli",
@@ -470,13 +684,22 @@ class IntentDetector {
         }
       }
       if (location == null) {
-        // Try extracting "in <city>" or "for <city>"
-        val cityMatch = Regex("(?:in|for|of|at)\\s+([a-zA-Z]+)").find(lower)
+        // Try extracting "in <city>" or "for <city>". Word boundaries are required:
+        // without them "what is the weather" matched "at is" and extracted the
+        // garbage city "Is". Common non-city words after the preposition are
+        // rejected so they never reach geocoding; anything else unmatched stays
+        // null and resolves to real device location downstream.
+        val cityMatch = Regex("\\b(?:in|for|of|at)\\s+([a-zA-Z]+)\\b").find(lower)
         if (cityMatch != null) {
-          location = cityMatch.groupValues[1].replaceFirstChar { it.uppercase() }
+          val candidate = cityMatch.groupValues[1]
+          if (candidate.lowercase() !in PREPOSITION_STOPWORDS) {
+            location = candidate.replaceFirstChar { it.uppercase() }
+          }
         }
       }
-      return DvexIntent.GetWeather(location = location ?: "Chennai", isTomorrow = isTomorrow)
+      // No hardcoded default city: null means the router resolves the real device
+      // location (or honestly reports PERMISSION_REQUIRED / ERROR).
+      return DvexIntent.GetWeather(location = location, isTomorrow = isTomorrow)
     }
 
     // Time
@@ -558,6 +781,18 @@ class IntentDetector {
       }
     }
 
+    // Trailing-verb SEARCH (Tanglish/Tamil): "Spider-Man search pannu".
+    val trailingSearchRegex = Regex(
+      "\\s*(?:-?a|-?ai|-?ஐ)?\\s*(search pannunga|search pannu|search panni|search பண்ணுங்க|search பண்ணு|search பண்ணி|தேடுங்க|தேடு)$",
+      RegexOption.IGNORE_CASE
+    )
+    if (trailingSearchRegex.containsMatchIn(rawText)) {
+      val trailingQuery = rawText.replace(trailingSearchRegex, "").trim()
+      if (trailingQuery.isNotBlank()) {
+        return DvexIntent.SearchWeb(trailingQuery)
+      }
+    }
+
     return null
   }
 
@@ -578,11 +813,49 @@ class IntentDetector {
       return DvexIntent.GoBack
     }
 
-    // Recents
-    if (lower.contains("recent") || lower == "open recents" ||
-        lower == "show recent apps" || lower.contains("recents kaattu")
+    // Recent-apps LISTING (real usage data, Bug 5) — checked BEFORE OS-recents
+    // navigation so "recent apps" returns an actual usage list instead of opening
+    // the OS recents screen.
+    if (lower.contains("recent apps") ||
+        lower.contains("recently used") ||
+        lower.contains("app usage") ||
+        lower.contains("apps did i use") ||
+        lower.contains("which apps") ||
+        lower.contains("most used apps") ||
+        lower.contains("last used apps") ||
+        lower.contains("recent apps kaatu") ||
+        lower.contains("enna apps use") ||
+        lower.contains("சமீபத்திய ஆப்ஸ்")
+    ) {
+      return DvexIntent.GetRecentApps
+    }
+
+    // Recents (OS navigation screen)
+    if (lower == "open recents" || lower == "recents" ||
+        lower == "recent" || lower.contains("recents kaattu")
     ) {
       return DvexIntent.OpenRecents
+    }
+
+    // Specific system settings screens. Placed before the generic notifications /
+    // settings fallbacks so "notification settings" never opens the shade.
+    if (lower.contains("wifi") || lower.contains("wi-fi")) {
+      return DvexIntent.OpenWifiSettings
+    }
+
+    val specificSettings = when {
+      lower.contains("bluetooth") -> SystemSettingsKind.BLUETOOTH
+      lower.contains("display settings") || lower.contains("screen settings") ||
+        lower.contains("brightness") -> SystemSettingsKind.DISPLAY
+      lower.contains("date settings") || lower.contains("date and time") ||
+        lower.contains("time settings") -> SystemSettingsKind.DATE_TIME
+      lower.contains("location settings") || lower.contains("gps settings") -> SystemSettingsKind.LOCATION
+      lower.contains("notification") && lower.contains("setting") -> SystemSettingsKind.NOTIFICATION
+      lower.contains("accessibility") -> SystemSettingsKind.ACCESSIBILITY
+      else -> null
+    }
+    if (specificSettings != null) {
+      return DvexIntent.OpenSystemSettings(specificSettings)
     }
 
     // Notifications
@@ -684,10 +957,15 @@ class IntentDetector {
       " open pannu",
       " open pannunga",
       " open pannu dvex",
+      " open panni",
+      " open pannitu",
+      " open pannittu",
       " ah open pannu",
       " thora",
       " open பண்ணு",
+      " open பண்ணி",
       " open பண்ணுங்க",
+      " open பண்ணிட்டு",
       " ஓபன் பண்ணு",
       " திறக்கவும்",
       " திற",
@@ -992,6 +1270,11 @@ class IntentDetector {
   }
 
   companion object {
+
+    /** Non-city words that must never be geocoded as a weather location. */
+    private val PREPOSITION_STOPWORDS = setOf(
+      "the", "a", "an", "and", "today", "tomorrow", "now", "here", "there"
+    )
     private const val TAG = "[D-VEX][INTENT]"
   }
 }

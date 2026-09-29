@@ -2,6 +2,11 @@ package com.example.brain
 
 import android.content.Context
 import android.util.Log
+import com.example.agent.AgentState
+import com.example.agent.DvexAgentEngine
+import com.example.agent.DvexAgentStateController
+import com.example.ai.AiEngine
+import com.example.ai.GeminiEngine
 import com.example.control.AppLauncherRepository
 import com.example.control.ContactResolver
 import com.example.control.DeviceControlRepository
@@ -15,7 +20,13 @@ data class BrainExecutionResult(
   val language: DetectedLanguage = DetectedLanguage.ENGLISH,
   val toolName: String = toolResult.toolName,
   val isSensitiveAction: Boolean = toolResult.requiresConfirmation,
-  val pendingActionId: String? = toolResult.pendingActionId
+  val pendingActionId: String? = toolResult.pendingActionId,
+  /**
+   * Tone estimated from the user's own words. Carried out of the brain so the
+   * voice layer can adapt rate/pitch to the same tone the reply was written for,
+   * instead of both layers guessing separately.
+   */
+  val tone: EstimatedTone = EstimatedTone.NEUTRAL
 )
 
 /**
@@ -26,14 +37,53 @@ data class BrainExecutionResult(
 class DvexSmartBrain(
   private val context: Context,
   private val appLauncher: AppLauncherRepository,
-  private val deviceControl: DeviceControlRepository
+  private val deviceControl: DeviceControlRepository,
+  /**
+   * LLM used to phrase natural responses. Defaults to the Gemini engine reading
+   * BuildConfig.GEMINI_API_KEY (populated from the project .env); pass a fake in
+   * tests or null to force deterministic fallback replies.
+   */
+  private val aiEngine: AiEngine? = GeminiEngine(
+    apiKeyProvider = {
+      try {
+        com.example.BuildConfig.GEMINI_API_KEY.takeIf { it.isNotBlank() }
+      } catch (e: Exception) {
+        null
+      }
+    }
+  )
 ) {
 
   private val intentDetector = IntentDetector()
   private val conversationContext = ConversationContext()
   private val toolRouter = DvexToolRouter(context, appLauncher, deviceControl)
-  private val responseGenerator = DvexResponseGenerator()
+  /**
+   * Agent layer: action-oriented planning + capability-checked execution. It owns
+   * device/app/multi-step intents and delegates each action to the EXISTING
+   * repositories; anything it does not plan falls through to [toolRouter] unchanged,
+   * so conversation, information, memory and confirmation flows are untouched.
+   */
+  private val agentEngine = DvexAgentEngine(context, appLauncher, deviceControl, toolRouter)
+  private val responseGenerator = DvexResponseGenerator(aiEngine)
   private val contactResolver = ContactResolver(context)
+
+  /**
+   * Memory hint for the response LLM, rendered from the EXISTING memory store
+   * ("core_memories" in dvex_brain_prefs, written by DvexToolRouter's
+   * remember-fact tool). No new memory system — just surfacing it to the prompt.
+   */
+  private val memoryHintLoader: () -> String? = {
+    try {
+      val memories = context.getSharedPreferences("dvex_brain_prefs", Context.MODE_PRIVATE)
+        .getStringSet("core_memories", emptySet())
+        .orEmpty()
+        .filter { it.isNotBlank() }
+      if (memories.isEmpty()) null else memories.take(5).joinToString("; ")
+    } catch (e: Exception) {
+      Log.w(TAG_RESPONSE, "Memory hint unavailable: ${e.message}")
+      null
+    }
+  }
 
   // Track pending sensitive confirmation within the brain
   private var activePendingIntent: DvexIntent? = null
@@ -86,7 +136,8 @@ class DvexSmartBrain(
           language = effectiveLang,
           userInput = rawInput,
           context = conversationContext,
-          tone = tone
+          tone = tone,
+          memoryHint = memoryHintLoader()
         )
         conversationContext.update(
           input = rawInput,
@@ -103,7 +154,8 @@ class DvexSmartBrain(
           spokenText = spoken,
           displayText = spoken,
           language = effectiveLang,
-          toolName = executionResult.toolName
+          toolName = executionResult.toolName,
+          tone = tone
         )
       } else if (isNegative(lower)) {
         Log.i(TAG_BRAIN, "User cancelled pending action.")
@@ -118,9 +170,9 @@ class DvexSmartBrain(
         }
 
         val cancelMessage = when (effectiveLang) {
-          DetectedLanguage.TAMIL -> "செயல் ரத்து செய்யப்பட்டது, Sir."
-          DetectedLanguage.TANGLISH -> "Action cancel panniyachu, Sir."
-          else -> "Action cancelled, Sir."
+          DetectedLanguage.TAMIL -> "செயல் ரத்து செய்யப்பட்டது."
+          DetectedLanguage.TANGLISH -> "Action cancel panniyachu."
+          else -> "Cancelled."
         }
 
         val cancelResult = DvexToolResult(
@@ -154,32 +206,47 @@ class DvexSmartBrain(
 
     // 2. Intent Understanding
     val detection = intentDetector.detectIntent(rawInput, conversationContext)
-    var intent = detection.intent
+    val intent = detection.intent
     val confidence = detection.confidence
     val language = detection.language
 
-    Log.i(TAG_INTENT, "$intent (confidence: $confidence, lang: $language)")
+    Log.i(TAG_INTENT, "[D-VEX][AGENT] input=\"$rawInput\" -> intent=$intent (confidence: $confidence, lang: $language)")
+    Log.i(
+      TAG_INTENT,
+      "[D-VEX][AGENT] route=${if (intent is DvexIntent.Conversation || intent is DvexIntent.GeneralQuestion) "CONVERSATION (LLM-direct)" else "ACTION (tool -> verify -> LLM phrasing)"}"
+    )
 
-    // 2.1 Uncertain speech: if speech recognition was low-confidence and the parsed
-    // intent is weak, ask a short clarification instead of guessing an action.
-    // Never invent missing words or facts.
+    // 2.1 Uncertain speech, two different situations:
+    // - GARBLED transcription: IntentDetector already returned LowConfidence, which
+    //   is handled deterministically downstream (never guess an action, never invent
+    //   words). Unchanged.
+    // - LOW ASR CONFIDENCE on a CONVERSATIONAL turn: the words are still real natural
+    //   language (an unfamiliar question scores low confidence simply because it is
+    //   not a known action). This used to be rewritten into a canned English
+    //   clarification, so valid questions never reached the LLM. Now the turn goes to
+    //   the LLM as-is with an explicit uncertainty hint, and the model decides whether
+    //   to answer or to ask the user (naturally, in their own language) to repeat.
+    //   Action intents are unaffected: they are still executed and verified by tools.
     val asrConfidence = lastAsrConfidence
-    if (asrConfidence != null && asrConfidence < ASR_LOW_CONFIDENCE_THRESHOLD &&
-        confidence < INTENT_LOW_CONFIDENCE_THRESHOLD &&
-        intent is DvexIntent.Conversation
-    ) {
-      Log.i(TAG_BRAIN, "Low ASR confidence ($asrConfidence) with weak intent; requesting clarification")
-      intent = DvexIntent.LowConfidence(
-        clarificationPrompt = "Sorry, Sir, I didn't quite catch that. Could you say it again?",
-        candidateIntent = null
-      )
+    val unclearConversation = asrConfidence != null &&
+      asrConfidence < ASR_LOW_CONFIDENCE_THRESHOLD &&
+      confidence < INTENT_LOW_CONFIDENCE_THRESHOLD &&
+      intent is DvexIntent.Conversation
+    if (unclearConversation) {
+      Log.i(TAG_BRAIN, "Low ASR confidence ($asrConfidence) on a conversational turn " +
+        "(intent confidence $confidence); passing to the LLM with an unclear-input hint " +
+        "instead of a canned clarification")
     }
 
     // 2.5 Estimate Tone
     val tone = responseGenerator.estimateTone(rawInput)
 
     // 3. Tool Selection & Execution
-    val toolResult = toolRouter.execute(intent, conversationContext)
+    // The agent layer goes first for device/app/multi-step requests; it returns null
+    // for everything else, in which case the existing tool router handles the intent
+    // exactly as before.
+    val agentResult = agentEngine.executeIfApplicable(intent, rawInput)
+    val toolResult = agentResult ?: toolRouter.execute(intent, conversationContext)
     Log.i(TAG_RESULT, "Tool: ${toolResult.toolName} -> Status: ${toolResult.status}")
 
     // 4. Natural Response Generation (Internal Consideration: meaning, goal, context, tone, language)
@@ -189,9 +256,19 @@ class DvexSmartBrain(
       language = language,
       userInput = rawInput,
       context = conversationContext,
-      tone = tone
+      tone = tone,
+      memoryHint = memoryHintLoader(),
+      unclearInput = unclearConversation
     )
-    Log.i(TAG_RESPONSE, spokenResponse)
+    // END-TO-END TRACE: proves what value is actually spoken for this input.
+    // If this line shows a fallback string, [D-VEX][AI] logs above it show why
+    // (configured=false, HTTP error, timeout, empty...).
+    Log.i(TAG_RESPONSE, "[D-VEX][AI] final spokenText=\"$spokenResponse\" (intent=$intent, tool=${toolResult.toolName}, status=${toolResult.status})")
+
+    // The response has now been produced, so the agent pipeline is genuinely done.
+    if (agentResult != null) {
+      DvexAgentStateController.transition(AgentState.IDLE)
+    }
 
     // 5. Update Conversation Context
     conversationContext.update(
@@ -218,7 +295,8 @@ class DvexSmartBrain(
       language = language,
       toolName = toolResult.toolName,
       isSensitiveAction = toolResult.requiresConfirmation,
-      pendingActionId = toolResult.pendingActionId
+      pendingActionId = toolResult.pendingActionId,
+      tone = tone
     )
   }
 

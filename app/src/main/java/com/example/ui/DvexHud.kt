@@ -1,9 +1,7 @@
 package com.example.ui
 
-import androidx.compose.animation.AnimatedContent
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -15,81 +13,113 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CutCornerShape
-import androidx.compose.foundation.text.BasicTextField
-import androidx.compose.foundation.text.KeyboardActions
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.Send
-import androidx.compose.material3.Icon
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.SolidColor
-import androidx.compose.ui.platform.LocalFocusManager
-import androidx.compose.ui.platform.LocalSoftwareKeyboardController
-import androidx.compose.ui.text.TextStyle
-import androidx.compose.ui.text.font.FontFamily
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.ImeAction
-import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
+import com.example.agent.AgentState
+import com.example.agent.DvexAgentStateController
+import com.example.model.AgentActivityController
+import com.example.model.AgentCapability
 import com.example.model.AiCoreState
 import com.example.model.DvexUiState
 import com.example.model.NavItem
 import com.example.model.VoiceState
-import com.example.ui.components.CameraVisionPanel
+import com.example.mode.PowerModeManager
+import com.example.repository.AssistantRepository
+import com.example.ui.components.AgentAccessPopupHost
 import com.example.ui.components.DvexAiCore
+import com.example.ui.components.DvexConversationCard
 import com.example.ui.components.DvexLeftSidebar
+import com.example.ui.components.DvexModeBadge
+import com.example.ui.components.DvexPanel
+import com.example.ui.components.DvexPanelLauncherButton
+import com.example.ui.components.DvexPanelPopupContent
+import com.example.ui.components.DvexPanelPopupHost
 import com.example.ui.components.DvexRightSidebar
 import com.example.ui.components.DvexTopBar
-import com.example.ui.components.LocationPanel
-import com.example.ui.components.MemoryCorePanel
 import com.example.ui.components.MicrophoneButton
-import com.example.ui.components.NotificationPanel
-import com.example.ui.components.QuickAccessPanel
-import com.example.ui.components.RecentActivityPanel
-import com.example.ui.components.ResponsePanel
-import com.example.ui.components.SystemStatusPanel
-import com.example.ui.components.TimePanel
-import com.example.ui.components.VoiceModule
-import com.example.ui.components.WeatherPanel
+import com.example.ui.components.RecentAppsOverlay
+import com.example.ui.components.TacticalCommandDock
+import com.example.ui.components.VoiceWaveBox
 import com.example.ui.theme.DvexBlack
-import com.example.ui.theme.DvexBorderMuted
-import com.example.ui.theme.DvexBorderRed
-import com.example.ui.theme.DvexNeonRed
-import com.example.ui.theme.DvexNeonRedBright
-import com.example.ui.theme.DvexSurfaceCard
-import com.example.ui.theme.DvexSurfaceDark
-import com.example.ui.theme.DvexTextMuted
-import com.example.ui.theme.DvexTextPrimary
-import com.example.ui.theme.DvexTextSecondary
 
-private enum class MobileHudTab(val label: String) {
-  ALL("ALL PANELS"),
-  VITALS("VITALS"),
-  ACCESS("QUICK"),
-  LOGS("ALERTS")
+/**
+ * The compact voice box mirrors the REAL agent phase. It never invents a
+ * listening/executing state: when the agent pipeline is idle the existing voice
+ * state is shown unchanged.
+ */
+private fun voiceStateForVoiceBox(voiceState: VoiceState, agentState: AgentState): VoiceState =
+  when (agentState) {
+    AgentState.UNDERSTANDING, AgentState.PLANNING,
+    AgentState.EXECUTING, AgentState.VERIFYING -> VoiceState.EXECUTING_ACTION
+    AgentState.WAITING_FOR_PERMISSION -> VoiceState.PROCESSING
+    AgentState.RESPONDING -> VoiceState.SPEAKING
+    AgentState.ERROR -> VoiceState.ERROR
+    AgentState.LISTENING -> VoiceState.LISTENING
+    AgentState.IDLE -> voiceState
+  }
+
+/**
+ * Single source of truth for which panel popup is open (NONE = no popup).
+ * Selecting a launcher button opens that panel; selecting another button swaps
+ * the popup; tapping the active button again closes it. Both form factors share
+ * this state via [rememberPanelState].
+ */
+private enum class DvexActivePanel { NONE, CAMERA, ACTIVITY, AI, TOOLS, SYSTEM, WEATHER, ALERTS, MEMORY, QUICK, TIME, MODE }
+
+/**
+ * Height reserved at the bottom of every scrollable content area for the floating
+ * control band (input cluster on the left, response card on the right), so the two
+ * overlays never sit on top of navigation or launcher controls.
+ */
+private val HUD_CONTROL_BAND_HEIGHT = 100.dp
+
+/** Ordered launcher buttons: one organized rail — never scattered, never covering the reactor. */
+private val hudPanelButtons = listOf(
+  DvexPanel.CAMERA,
+  DvexPanel.ACTIVITY,
+  DvexPanel.AI,
+  DvexPanel.TOOLS,
+  DvexPanel.SYSTEM,
+  DvexPanel.WEATHER,
+  DvexPanel.ALERTS,
+  DvexPanel.MEMORY,
+  DvexPanel.QUICK,
+  DvexPanel.TIME,
+  DvexPanel.MODE
+)
+
+/** Shared popup-state machine for both form factors (rule set from the panel spec). */
+@Composable
+private fun rememberPanelState(): Pair<DvexActivePanel, (DvexActivePanel) -> Unit> {
+  var activePanel by remember { mutableStateOf(DvexActivePanel.NONE) }
+  val select: (DvexActivePanel) -> Unit = { requested ->
+    activePanel = if (activePanel == requested) DvexActivePanel.NONE else requested
+  }
+  return activePanel to select
 }
 
 /**
  * Main D-VEX Tactical HUD Screen.
  * Automatically adapts between wide desktop/tablet and compact phone form factors.
+ * Panel popups overlay the layout (they never reflow it), so the central reactor
+ * stays mathematically centered in the full viewport in both form factors.
  */
 @Composable
 fun DvexHud(
@@ -100,8 +130,33 @@ fun DvexHud(
   onCenterCoreTapped: (() -> Unit)? = null,
   onMicrophoneTapped: (() -> Unit)? = null,
   onQuickActionSelected: ((String) -> Unit)? = null,
-  onOpenSettingsRequested: (() -> Unit)? = null
+  onOpenSettingsRequested: (() -> Unit)? = null,
+  onOrbToggleRequested: ((Boolean) -> Unit)? = null,
+  onRecentAppsRequested: (() -> Unit)? = null,
+  onDismissRecentApps: (() -> Unit)? = null
 ) {
+  val showRecentAppsOverlay =
+    uiState.recentAppsOverlay != null || uiState.recentAppsOverlayPermissionRequired
+
+  // Contextual agent-activity feed. Genuinely wired to existing UI-state signals —
+  // no demo data. The future action layer publishes here via
+  // AgentActivityController (begin → update → complete), exactly matching the
+  // popup states defined for app/device actions.
+  val agentActivities by AgentActivityController.activities.collectAsState()
+  val agentState by DvexAgentStateController.state.collectAsState()
+
+  LaunchedEffect(uiState.cameraPermission.requested, uiState.cameraPermission.granted) {
+    if (uiState.cameraPermission.requested && !uiState.cameraPermission.granted) {
+      AgentActivityController.requireAccess(AgentCapability.CAMERA)
+    }
+  }
+
+  LaunchedEffect(uiState.recentAppsOverlayPermissionRequired) {
+    if (uiState.recentAppsOverlayPermissionRequired) {
+      AgentActivityController.requireAccess(AgentCapability.RECENT_APPS)
+    }
+  }
+
   BoxWithConstraints(
     modifier = modifier
       .fillMaxSize()
@@ -117,7 +172,10 @@ fun DvexHud(
         onCenterCoreTapped = onCenterCoreTapped,
         onMicrophoneTapped = onMicrophoneTapped,
         onQuickActionSelected = onQuickActionSelected,
-        onOpenSettingsRequested = onOpenSettingsRequested
+        onOpenSettingsRequested = onOpenSettingsRequested,
+        onOrbToggleRequested = onOrbToggleRequested,
+        onRecentAppsRequested = onRecentAppsRequested,
+        onDismissRecentApps = onDismissRecentApps
       )
     } else {
       CompactMobileTacticalHud(
@@ -127,14 +185,180 @@ fun DvexHud(
         onCenterCoreTapped = onCenterCoreTapped,
         onMicrophoneTapped = onMicrophoneTapped,
         onQuickActionSelected = onQuickActionSelected,
-        onOpenSettingsRequested = onOpenSettingsRequested
+        onOpenSettingsRequested = onOpenSettingsRequested,
+        onOrbToggleRequested = onOrbToggleRequested,
+        onRecentAppsRequested = onRecentAppsRequested,
+        onDismissRecentApps = onDismissRecentApps
+      )
+    }
+
+    // ---------------------------------------------------------------------
+    // SHARED FLOATING CONTROL BAND (both form factors)
+    //
+    // BOTTOM-LEFT  : ONE input cluster — tactical text dock + voice button +
+    //                live waveform. Typing and speaking are the same entry point.
+    // BOTTOM-RIGHT : compact conversation card — latest user input + final
+    //                D-VEX response (the exact string sent to TTS).
+    //
+    // Both are corner-anchored, adaptive and wrap-content: nothing spans the
+    // screen, nothing is full-height, and the centred reactor stays fully visible.
+    // Insets keep them clear of Android system UI.
+    // ---------------------------------------------------------------------
+    val isNarrowBand = maxWidth < 720.dp
+    val inputWidth = if (isNarrowBand) maxWidth * 0.40f else 248.dp
+    val conversationCardWidth = if (isNarrowBand) maxWidth * 0.48f else 330.dp
+    val conversationCardMaxHeight = if (isNarrowBand) 120.dp else 208.dp
+
+    Box(
+      modifier = Modifier
+        .fillMaxSize()
+        .windowInsetsPadding(WindowInsets.navigationBars)
+    ) {
+      AgentAccessPopupHost(
+        activities = agentActivities,
+        modifier = Modifier
+          .align(Alignment.TopEnd)
+          .windowInsetsPadding(WindowInsets.statusBars)
+          .padding(top = 8.dp, end = 10.dp)
+      )
+
+      // BOTTOM-RIGHT first, so the input cluster (composed above) always wins the
+      // overlap when the text field is deliberately expanded on a small screen.
+      DvexConversationCard(
+        userInput = uiState.lastUserInput,
+        responseText = uiState.responseText,
+        modifier = Modifier
+          .align(Alignment.BottomEnd)
+          .padding(end = 12.dp, bottom = 10.dp)
+          .width(conversationCardWidth)
+          .heightIn(max = conversationCardMaxHeight)
+      )
+
+      Row(
+        modifier = Modifier
+          .align(Alignment.BottomStart)
+          .padding(start = 12.dp, bottom = 10.dp),
+        verticalAlignment = Alignment.Bottom,
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+      ) {
+        // TEXT INPUT: collapsed to one small button until needed, then opens into
+        // the existing command field. Feeds AssistantRepository.processCommand.
+        TacticalCommandDock(
+          onSendCommand = { cmd -> onSendCommand?.invoke(cmd) },
+          expandedWidth = inputWidth
+        )
+
+        // VOICE INPUT: the same brain, the same pipeline.
+        MicrophoneButton(
+          isListening = uiState.voiceState == VoiceState.LISTENING,
+          onClick = {
+            if (onMicrophoneTapped != null) {
+              onMicrophoneTapped()
+            } else {
+              val nextVoice =
+                if (uiState.voiceState == VoiceState.LISTENING) VoiceState.IDLE else VoiceState.LISTENING
+              val nextAi = if (nextVoice == VoiceState.LISTENING) AiCoreState.LISTENING else AiCoreState.IDLE
+              // Only the live phase changes here: the response card keeps showing
+              // the last REAL reply instead of a hardcoded status sentence.
+              onUiStateChange(
+                uiState.copy(voiceState = nextVoice, aiState = nextAi)
+              )
+            }
+          }
+        )
+
+        // Live waveform — appears only while the voice pipeline is actually doing
+        // something, and belongs to the input cluster.
+        VoiceWaveBox(
+          voiceState = voiceStateForVoiceBox(uiState.voiceState, agentState),
+          modifier = Modifier.align(Alignment.CenterVertically)
+        )
+      }
+    }
+
+    // DUAL MODE: on-screen RECENT APPS overlay — real usage-stats data (or the
+    // honest permission state) rendered above the HUD; never placeholder apps.
+    if (showRecentAppsOverlay) {
+      RecentAppsOverlay(
+        permissionRequired = uiState.recentAppsOverlayPermissionRequired,
+        entries = uiState.recentAppsOverlay ?: emptyList(),
+        onDismiss = { onDismissRecentApps?.invoke() }
       )
     }
   }
 }
 
 /**
- * Complete Full Multi-Column HUD Layout for Desktop / Tablet / Foldables
+ * Popup-layer wiring shared by both form factors: BACK closes the popup before
+ * leaving the main HUD, and the selected panel's EXISTING composable is rendered
+ * inside the single glass popup host.
+ */
+@Composable
+private fun HudPanelPopupLayer(
+  activePanel: DvexActivePanel,
+  onSelect: (DvexActivePanel) -> Unit,
+  uiState: DvexUiState,
+  powerModeEnabled: Boolean,
+  settings: com.example.model.DvexSettings,
+  onSelectStandard: () -> Unit,
+  onSelectPower: () -> Unit,
+  onSendCommand: (String) -> Unit,
+  onOrbToggleRequested: (Boolean) -> Unit,
+  onQuickActionSelected: (String) -> Unit,
+  onRecentAppsRequested: () -> Unit
+) {
+  // BACK press closes the popup first; only when no popup is open does BACK
+  // propagate (default activity behaviour).
+  BackHandler(enabled = activePanel != DvexActivePanel.NONE) {
+    onSelect(DvexActivePanel.NONE)
+  }
+
+  DvexPanelPopupHost(
+    activePanel = activePanel.toPopupPanel(),
+    onDismiss = { onSelect(DvexActivePanel.NONE) }
+  ) {
+    DvexPanelPopupContent(
+      activePanel = activePanel.toPopupPanel(),
+      weatherData = uiState.weather,
+      notifications = uiState.notifications,
+      systemStatus = uiState.systemStatus,
+      memoryPercentage = uiState.memoryPercentage,
+      recentActivities = uiState.recentActivities,
+      voiceState = uiState.voiceState,
+      powerModeEnabled = powerModeEnabled,
+      settings = settings,
+      onSendCommand = onSendCommand,
+      onOrbToggleRequested = onOrbToggleRequested,
+      onQuickActionSelected = onQuickActionSelected,
+      onRecentAppsRequested = onRecentAppsRequested,
+      onSelectStandard = onSelectStandard,
+      onSelectPower = onSelectPower
+    )
+  }
+}
+
+private fun DvexActivePanel.toPopupPanel(): DvexPanel = when (this) {
+  DvexActivePanel.NONE -> DvexPanel.NONE
+  DvexActivePanel.CAMERA -> DvexPanel.CAMERA
+  DvexActivePanel.ACTIVITY -> DvexPanel.ACTIVITY
+  DvexActivePanel.AI -> DvexPanel.AI
+  DvexActivePanel.TOOLS -> DvexPanel.TOOLS
+  DvexActivePanel.SYSTEM -> DvexPanel.SYSTEM
+  DvexActivePanel.WEATHER -> DvexPanel.WEATHER
+  DvexActivePanel.ALERTS -> DvexPanel.ALERTS
+  DvexActivePanel.MEMORY -> DvexPanel.MEMORY
+  DvexActivePanel.QUICK -> DvexPanel.QUICK
+  DvexActivePanel.TIME -> DvexPanel.TIME
+  DvexActivePanel.MODE -> DvexPanel.MODE
+}
+
+/**
+ * Complete Full HUD Layout for Desktop / Tablet / Foldables.
+ *
+ * Panels no longer sit permanently on the HUD: the layout is two symmetric
+ * launcher rails + the central reactor. Equal weights on both sides of the
+ * reactor keep it mathematically centered in the full viewport — exactly where
+ * it was before (the reactor component itself is untouched).
  */
 @Composable
 private fun WidescreenTacticalHud(
@@ -144,17 +368,30 @@ private fun WidescreenTacticalHud(
   onCenterCoreTapped: (() -> Unit)? = null,
   onMicrophoneTapped: (() -> Unit)? = null,
   onQuickActionSelected: ((String) -> Unit)? = null,
-  onOpenSettingsRequested: (() -> Unit)? = null
+  onOpenSettingsRequested: (() -> Unit)? = null,
+  onOrbToggleRequested: ((Boolean) -> Unit)? = null,
+  onRecentAppsRequested: (() -> Unit)? = null,
+  onDismissRecentApps: (() -> Unit)? = null
 ) {
+  val context = LocalContext.current
+  // DUAL MODE: persisted mode state drives the header badge and the MODE popup.
+  val powerModeEnabled by PowerModeManager.getInstance(context)
+    .powerModeEnabled.collectAsState()
+  val settings by AssistantRepository.getInstance(context)
+    .settings.collectAsState()
+
+  val (activePanel, selectPanel) = rememberPanelState()
+
   Column(
     modifier = Modifier
       .fillMaxSize()
       .windowInsetsPadding(WindowInsets.navigationBars)
   ) {
-    // TOP BAR
+    // TOP BAR — mode chip opens the real D-VEX MODE selector popup.
     DvexTopBar(
       uiState = uiState,
-      isCompact = false
+      isCompact = false,
+      onModeSelectorRequested = { selectPanel(DvexActivePanel.MODE) }
     )
 
     // MAIN CONTENT ROW
@@ -165,9 +402,10 @@ private fun WidescreenTacticalHud(
         .padding(horizontal = 6.dp, vertical = 4.dp),
       verticalAlignment = Alignment.CenterVertically
     ) {
-      // 1. LEFT SIDEBAR
+      // 1. LEFT SIDEBAR (existing nav) — its lower edge clears the input band.
       DvexLeftSidebar(
         selectedItem = uiState.selectedNavigation,
+        bottomInset = HUD_CONTROL_BAND_HEIGHT,
         onItemSelected = { nav ->
           if (nav == NavItem.SETTINGS) {
             onOpenSettingsRequested?.invoke()
@@ -178,24 +416,31 @@ private fun WidescreenTacticalHud(
 
       Spacer(modifier = Modifier.width(6.dp))
 
-      // 2. LEFT PANELS (Scrollable Column)
+      // 2. LEFT PANEL LAUNCHER RAIL — the one organized button area (top half).
+      // Panels open as popups; they are never permanently on the HUD. The rail
+      // scrolls inside a viewport that stops above the floating input band, so no
+      // launcher button ends up under the dock / voice button.
       Column(
         modifier = Modifier
           .weight(1f)
           .fillMaxHeight()
+          .padding(bottom = HUD_CONTROL_BAND_HEIGHT)
           .verticalScroll(rememberScrollState()),
-        verticalArrangement = Arrangement.spacedBy(8.dp)
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
       ) {
-        WeatherPanel(weather = uiState.weather)
-        NotificationPanel(notifications = uiState.notifications)
-        SystemStatusPanel(vitals = uiState.systemStatus)
-        MemoryCorePanel(percentage = uiState.memoryPercentage)
-        CameraVisionPanel()
+        hudPanelButtons.take(6).forEach { panel ->
+          DvexPanelLauncherButton(
+            panel = panel,
+            isActive = activePanel == panel.toActivePanel(),
+            onClick = { selectPanel(panel.toActivePanel()) }
+          )
+        }
       }
 
       Spacer(modifier = Modifier.width(8.dp))
 
-      // 3. CENTER D-VEX AI CORE (Visual Focus)
+      // 3. CENTER D-VEX AI CORE (Visual Focus) — untouched component, centered.
       Box(
         modifier = Modifier
           .weight(1.35f)
@@ -222,107 +467,107 @@ private fun WidescreenTacticalHud(
 
       Spacer(modifier = Modifier.width(8.dp))
 
-      // 4. RIGHT PANELS (Scrollable Column)
+      // 4. RIGHT PANEL LAUNCHER RAIL — same buttons, second half of the list.
       Column(
         modifier = Modifier
           .weight(1f)
           .fillMaxHeight()
+          .padding(bottom = HUD_CONTROL_BAND_HEIGHT)
           .verticalScroll(rememberScrollState()),
-        verticalArrangement = Arrangement.spacedBy(8.dp)
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
       ) {
-        TimePanel()
-        LocationPanel(location = uiState.location)
-        QuickAccessPanel(
-          onActionSelected = { action ->
-            if (action == "Settings" || action == "More") {
-              onOpenSettingsRequested?.invoke()
-            }
-            if (onQuickActionSelected != null) {
-              onQuickActionSelected(action)
-            } else {
-              onUiStateChange(
-                uiState.copy(
-                  responseText = "Quick access initiated for $action. Standby.",
-                  aiState = AiCoreState.PROCESSING
-                )
-              )
-            }
-          }
-        )
-        RecentActivityPanel(activities = uiState.recentActivities)
+        hudPanelButtons.drop(6).forEach { panel ->
+          DvexPanelLauncherButton(
+            panel = panel,
+            isActive = activePanel == panel.toActivePanel(),
+            onClick = { selectPanel(panel.toActivePanel()) }
+          )
+        }
       }
 
       Spacer(modifier = Modifier.width(6.dp))
 
-      // 5. RIGHT SIDEBAR
+      // 5. RIGHT SIDEBAR (existing nav) — its lower edge clears the response card.
       DvexRightSidebar(
         selectedItem = uiState.selectedNavigation,
+        bottomInset = HUD_CONTROL_BAND_HEIGHT,
         onItemSelected = { nav ->
-          if (nav == NavItem.SETTINGS) {
-            onOpenSettingsRequested?.invoke()
+          when (nav) {
+            // POWER was a dead-end panel; it now opens the real D-VEX MODE selector.
+            NavItem.POWER -> selectPanel(DvexActivePanel.MODE)
+            NavItem.AI -> selectPanel(DvexActivePanel.AI)
+            NavItem.TOOLS -> selectPanel(DvexActivePanel.TOOLS)
+            NavItem.MEMORY -> selectPanel(DvexActivePanel.MEMORY)
+            NavItem.SETTINGS -> onOpenSettingsRequested?.invoke()
+            else -> { /* action nav (CALL/MSG/...) stays routed as before */ }
           }
           onUiStateChange(uiState.copy(selectedNavigation = nav))
         }
       )
     }
 
-    // BOTTOM BAR: Voice, Chat Input & Responses
-    Column(
-      modifier = Modifier
-        .fillMaxWidth()
-        .background(DvexSurfaceDark)
-        .border(1.dp, DvexBorderMuted, CutCornerShape(topStart = 8.dp, topEnd = 8.dp))
-        .padding(horizontal = 12.dp, vertical = 6.dp)
-    ) {
-      TacticalCommandInput(
-        onSendCommand = { cmd -> onSendCommand?.invoke(cmd) },
-        modifier = Modifier.fillMaxWidth()
-      )
+    // The old full-width conversation bar is GONE: it was the panel covering the
+    // reactor. The conversation now lives in the compact bottom-right card of the
+    // shared floating band, and this content row is free to use the full height so
+    // the reactor stays mathematically centred in the viewport.
+  }
 
-      Spacer(modifier = Modifier.height(6.dp))
-
-      Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically
-      ) {
-        VoiceModule(
-          voiceState = uiState.voiceState,
-          modifier = Modifier.weight(1f)
-        )
-
-        MicrophoneButton(
-          isListening = uiState.voiceState == VoiceState.LISTENING,
-          onClick = {
-            if (onMicrophoneTapped != null) {
-              onMicrophoneTapped()
-            } else {
-              val nextVoice = if (uiState.voiceState == VoiceState.LISTENING) VoiceState.IDLE else VoiceState.LISTENING
-              val nextAi = if (nextVoice == VoiceState.LISTENING) AiCoreState.LISTENING else AiCoreState.IDLE
-              onUiStateChange(
-                uiState.copy(
-                  voiceState = nextVoice,
-                  aiState = nextAi,
-                  responseText = if (nextVoice == VoiceState.LISTENING) "Listening for command..." else "Standing by."
-                )
-              )
-            }
-          },
-          modifier = Modifier.padding(horizontal = 16.dp)
-        )
-
-        ResponsePanel(
-          responseText = uiState.responseText,
-          modifier = Modifier.weight(1f)
+  // Single glass popup layer above everything (overlays — never reflows the HUD).
+  // Mode selection persists through the EXISTING PowerModeManager (SharedPreferences);
+  // MainActivity syncs real capability wiring from the same flow.
+  val modeManager = PowerModeManager.getInstance(context)
+  HudPanelPopupLayer(
+    activePanel = activePanel,
+    onSelect = selectPanel,
+    uiState = uiState,
+    powerModeEnabled = powerModeEnabled,
+    settings = settings,
+    onSelectStandard = {
+      modeManager.setEnabled(false)
+      selectPanel(DvexActivePanel.NONE)
+    },
+    onSelectPower = {
+      modeManager.setEnabled(true)
+      selectPanel(DvexActivePanel.NONE)
+    },
+    onSendCommand = { cmd -> onSendCommand?.invoke(cmd) },
+    onOrbToggleRequested = { enable -> onOrbToggleRequested?.invoke(enable) },
+    onQuickActionSelected = { action ->
+      if (onQuickActionSelected != null) {
+        onQuickActionSelected(action)
+      } else {
+        onUiStateChange(
+          uiState.copy(
+            responseText = "Quick access initiated for $action. Standby.",
+            aiState = AiCoreState.PROCESSING
+          )
         )
       }
-    }
-  }
+    },
+    onRecentAppsRequested = { onRecentAppsRequested?.invoke() }
+  )
+}
+
+private fun DvexPanel.toActivePanel(): DvexActivePanel = when (this) {
+  DvexPanel.NONE -> DvexActivePanel.NONE
+  DvexPanel.CAMERA -> DvexActivePanel.CAMERA
+  DvexPanel.ACTIVITY -> DvexActivePanel.ACTIVITY
+  DvexPanel.AI -> DvexActivePanel.AI
+  DvexPanel.TOOLS -> DvexActivePanel.TOOLS
+  DvexPanel.SYSTEM -> DvexActivePanel.SYSTEM
+  DvexPanel.WEATHER -> DvexActivePanel.WEATHER
+  DvexPanel.ALERTS -> DvexActivePanel.ALERTS
+  DvexPanel.MEMORY -> DvexActivePanel.MEMORY
+  DvexPanel.QUICK -> DvexActivePanel.QUICK
+  DvexPanel.TIME -> DvexActivePanel.TIME
+  DvexPanel.MODE -> DvexActivePanel.MODE
 }
 
 /**
- * Optimized Mobile Portrait Layout for Phones
- * Prioritizes: Central AI Core, Voice Controls, Response Panel, with Tactical Switcher for Panels
+ * Optimized Mobile Portrait/Landscape Layout for Phones.
+ * The reactor and conversation are primary; every panel is behind the single
+ * organized launcher rail (popups). The mode badge shows the live mode state.
  */
 @Composable
 private fun CompactMobileTacticalHud(
@@ -332,32 +577,48 @@ private fun CompactMobileTacticalHud(
   onCenterCoreTapped: (() -> Unit)? = null,
   onMicrophoneTapped: (() -> Unit)? = null,
   onQuickActionSelected: ((String) -> Unit)? = null,
-  onOpenSettingsRequested: (() -> Unit)? = null
+  onOpenSettingsRequested: (() -> Unit)? = null,
+  onOrbToggleRequested: ((Boolean) -> Unit)? = null,
+  onRecentAppsRequested: (() -> Unit)? = null,
+  onDismissRecentApps: (() -> Unit)? = null
 ) {
-  var activeMobileTab by remember { mutableStateOf(MobileHudTab.ALL) }
+  val context = LocalContext.current
+  // DUAL MODE: persisted mode state drives the badge and the MODE popup.
+  val powerModeEnabled by PowerModeManager.getInstance(context)
+    .powerModeEnabled.collectAsState()
+  val settings by AssistantRepository.getInstance(context)
+    .settings.collectAsState()
+
+  val (activePanel, selectPanel) = rememberPanelState()
 
   Column(
     modifier = Modifier
       .fillMaxSize()
       .windowInsetsPadding(WindowInsets.navigationBars)
   ) {
-    // TOP BAR: D-VEX + System status (Compact version)
+    // TOP BAR: D-VEX + System status (Compact version) — mode chip opens the
+    // real D-VEX MODE selector popup.
     DvexTopBar(
       uiState = uiState,
-      isCompact = true
+      isCompact = true,
+      onModeSelectorRequested = { selectPanel(DvexActivePanel.MODE) }
     )
 
-    // MAIN SCROLLABLE CONTENT BODY
+    // MAIN CONTENT: reactor + conversation + launcher rail.
     Column(
       modifier = Modifier
         .weight(1f)
         .fillMaxWidth()
         .padding(horizontal = 6.dp, vertical = 4.dp)
+        // Reserved space for the floating input band + response card so the
+        // launcher grid never ends up underneath them (the phone card can grow
+        // a little past the band, hence the extra clearance).
+        .padding(bottom = HUD_CONTROL_BAND_HEIGHT + 24.dp)
         .verticalScroll(rememberScrollState()),
       verticalArrangement = Arrangement.spacedBy(8.dp),
       horizontalAlignment = Alignment.CenterHorizontally
     ) {
-      // 1. ALWAYS-PROMINENT LARGE D-VEX AI CORE REACTOR
+      // 1. ALWAYS-PROMINENT LARGE D-VEX AI CORE REACTOR — untouched.
       DvexAiCore(
         aiState = uiState.aiState,
         onStateChangeRequest = { newState ->
@@ -376,316 +637,70 @@ private fun CompactMobileTacticalHud(
         modifier = Modifier.padding(vertical = 4.dp)
       )
 
-      // 2. MOBILE TACTICAL TAB SELECTOR (2-Column & Category View)
-      Row(
-        modifier = Modifier
-          .fillMaxWidth()
-          .background(DvexSurfaceDark)
-          .border(1.dp, DvexBorderMuted, CutCornerShape(4.dp))
-          .padding(horizontal = 4.dp, vertical = 3.dp),
-        horizontalArrangement = Arrangement.SpaceAround
-      ) {
-        MobileHudTab.values().forEach { tab ->
-          val isSelected = tab == activeMobileTab
-          Box(
-            modifier = Modifier
-              .clip(CutCornerShape(3.dp))
-              .background(if (isSelected) DvexNeonRed else DvexSurfaceCard)
-              .border(1.dp, if (isSelected) DvexNeonRedBright else DvexBorderMuted, CutCornerShape(3.dp))
-              .clickable { activeMobileTab = tab }
-              .padding(horizontal = 6.dp, vertical = 3.dp)
-          ) {
-            Text(
-              text = "[ ${tab.label} ]",
-              fontFamily = FontFamily.Monospace,
-              fontSize = 8.sp,
-              fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
-              color = if (isSelected) Color.White else DvexTextSecondary
-            )
-          }
-        }
-      }
-
-      // 3. COMPACT 2-COLUMN TACTICAL INFORMATION PANELS
-      when (activeMobileTab) {
-        MobileHudTab.ALL -> {
-          // Row 1: Weather + Memory Core
-          Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(6.dp)
-          ) {
-            WeatherPanel(weather = uiState.weather, modifier = Modifier.weight(1f))
-            MemoryCorePanel(percentage = uiState.memoryPercentage, modifier = Modifier.weight(1f))
-          }
-
-          // Row 2: System Status + Camera Vision
-          Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(6.dp)
-          ) {
-            SystemStatusPanel(vitals = uiState.systemStatus, modifier = Modifier.weight(1f))
-            CameraVisionPanel(modifier = Modifier.weight(1f))
-          }
-
-          // Row 3: Time + Location
-          Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(6.dp)
-          ) {
-            TimePanel(modifier = Modifier.weight(1f))
-            LocationPanel(location = uiState.location, modifier = Modifier.weight(1f))
-          }
-
-          // Quick Access Grid (8 compact tactical buttons)
-          QuickAccessPanel(
-            onActionSelected = { action ->
-              if (action == "Settings" || action == "More") {
-                onOpenSettingsRequested?.invoke()
-              }
-              if (onQuickActionSelected != null) {
-                onQuickActionSelected(action)
-              } else {
-                onUiStateChange(
-                  uiState.copy(
-                    responseText = "Quick access: $action triggered in HUD.",
-                    aiState = AiCoreState.PROCESSING
-                  )
-                )
-              }
-            }
-          )
-
-          // Row 4: Notifications + Recent Activity
-          Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(6.dp)
-          ) {
-            NotificationPanel(notifications = uiState.notifications, modifier = Modifier.weight(1f))
-            RecentActivityPanel(activities = uiState.recentActivities, modifier = Modifier.weight(1f))
-          }
-        }
-
-        MobileHudTab.VITALS -> {
-          Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(6.dp)
-          ) {
-            SystemStatusPanel(vitals = uiState.systemStatus, modifier = Modifier.weight(1f))
-            MemoryCorePanel(percentage = uiState.memoryPercentage, modifier = Modifier.weight(1f))
-          }
-          Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(6.dp)
-          ) {
-            WeatherPanel(weather = uiState.weather, modifier = Modifier.weight(1f))
-            CameraVisionPanel(modifier = Modifier.weight(1f))
-          }
-        }
-
-        MobileHudTab.ACCESS -> {
-          QuickAccessPanel(
-            onActionSelected = { action ->
-              if (action == "Settings" || action == "More") {
-                onOpenSettingsRequested?.invoke()
-              }
-              if (onQuickActionSelected != null) {
-                onQuickActionSelected(action)
-              } else {
-                onUiStateChange(
-                  uiState.copy(
-                    responseText = "Quick access: $action triggered in HUD.",
-                    aiState = AiCoreState.PROCESSING
-                  )
-                )
-              }
-            }
-          )
-          Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(6.dp)
-          ) {
-            TimePanel(modifier = Modifier.weight(1f))
-            LocationPanel(location = uiState.location, modifier = Modifier.weight(1f))
-          }
-        }
-
-        MobileHudTab.LOGS -> {
-          Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(6.dp)
-          ) {
-            NotificationPanel(notifications = uiState.notifications, modifier = Modifier.weight(1f))
-            RecentActivityPanel(activities = uiState.recentActivities, modifier = Modifier.weight(1f))
-          }
-        }
-      }
-    }
-
-    // DOCKED BOTTOM CONTROLS
-    Column(
-      modifier = Modifier
-        .fillMaxWidth()
-        .background(DvexSurfaceDark)
-        .border(1.dp, DvexBorderMuted, CutCornerShape(topStart = 8.dp, topEnd = 8.dp))
-        .padding(horizontal = 10.dp, vertical = 6.dp)
-    ) {
-      // Dynamic response bubble
-      ResponsePanel(
-        responseText = uiState.responseText,
-        modifier = Modifier.fillMaxWidth()
+      // Active-mode indicator, always visible under the reactor.
+      DvexModeBadge(
+        powerModeEnabled = powerModeEnabled,
+        onClick = { selectPanel(DvexActivePanel.MODE) }
       )
 
-      Spacer(modifier = Modifier.height(6.dp))
+      // The conversation itself is the compact bottom-right card (shared floating
+      // band) so it never pushes the reactor out of view on a phone screen.
 
-      // Tactical Chat Command Input Box ("Enter tactical command...")
-      TacticalCommandInput(
-        onSendCommand = { cmd -> onSendCommand?.invoke(cmd) },
-        modifier = Modifier.fillMaxWidth()
-      )
-
-      Spacer(modifier = Modifier.height(6.dp))
-
-      Row(
+      // 2. PANEL LAUNCHER GRID — the one organized button area (2 rows, wrap-style).
+      Column(
         modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
       ) {
-        VoiceModule(
-          voiceState = uiState.voiceState,
-          modifier = Modifier.weight(1f)
-        )
-
-        Spacer(modifier = Modifier.width(10.dp))
-
-        MicrophoneButton(
-          isListening = uiState.voiceState == VoiceState.LISTENING,
-          onClick = {
-            if (onMicrophoneTapped != null) {
-              onMicrophoneTapped()
-            } else {
-              val nextVoice = if (uiState.voiceState == VoiceState.LISTENING) VoiceState.IDLE else VoiceState.LISTENING
-              val nextAi = if (nextVoice == VoiceState.LISTENING) AiCoreState.LISTENING else AiCoreState.IDLE
-              onUiStateChange(
-                uiState.copy(
-                  voiceState = nextVoice,
-                  aiState = nextAi,
-                  responseText = if (nextVoice == VoiceState.LISTENING) "Listening for command..." else "Standing by."
-                )
+        hudPanelButtons.chunked(4).forEach { rowPanels ->
+          Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.Center
+          ) {
+            rowPanels.forEach { panel ->
+              DvexPanelLauncherButton(
+                panel = panel,
+                isActive = activePanel == panel.toActivePanel(),
+                onClick = { selectPanel(panel.toActivePanel()) },
+                modifier = Modifier.padding(horizontal = 3.dp)
               )
             }
           }
-        )
+        }
       }
     }
   }
-}
 
-/**
- * Tactical Command Text Input with Send Button.
- * Provides a reliable text-based interface to dispatch commands directly to D-VEX.
- */
-@Composable
-fun TacticalCommandInput(
-  onSendCommand: (String) -> Unit,
-  modifier: Modifier = Modifier
-) {
-  var commandText by remember { mutableStateOf("") }
-  val focusManager = LocalFocusManager.current
-  val keyboardController = LocalSoftwareKeyboardController.current
-
-  Row(
-    modifier = modifier
-      .background(DvexSurfaceDark, CutCornerShape(4.dp))
-      .border(1.dp, DvexBorderMuted, CutCornerShape(4.dp))
-      .padding(horizontal = 8.dp, vertical = 4.dp),
-    verticalAlignment = Alignment.CenterVertically
-  ) {
-    BasicTextField(
-      value = commandText,
-      onValueChange = { commandText = it },
-      modifier = Modifier
-        .weight(1f)
-        .padding(horizontal = 6.dp, vertical = 6.dp),
-      textStyle = TextStyle(
-        fontFamily = FontFamily.Monospace,
-        fontSize = 12.sp,
-        fontWeight = FontWeight.Medium,
-        color = DvexTextPrimary
-      ),
-      cursorBrush = SolidColor(DvexNeonRedBright),
-      singleLine = true,
-      keyboardOptions = KeyboardOptions(
-        imeAction = ImeAction.Send,
-        keyboardType = KeyboardType.Text
-      ),
-      keyboardActions = KeyboardActions(
-        onSend = {
-          if (commandText.isNotBlank()) {
-            val cmd = commandText.trim()
-            commandText = ""
-            keyboardController?.hide()
-            focusManager.clearFocus()
-            onSendCommand(cmd)
-          }
-        }
-      ),
-      decorationBox = { innerTextField ->
-        Box(contentAlignment = Alignment.CenterStart) {
-          if (commandText.isEmpty()) {
-            Text(
-              text = "Enter tactical command...",
-              fontFamily = FontFamily.Monospace,
-              fontSize = 11.sp,
-              color = DvexTextMuted
-            )
-          }
-          innerTextField()
-        }
-      }
-    )
-
-    Spacer(modifier = Modifier.width(6.dp))
-
-    val isSendEnabled = commandText.isNotBlank()
-    Box(
-      modifier = Modifier
-        .clip(CutCornerShape(3.dp))
-        .background(if (isSendEnabled) DvexNeonRed else DvexSurfaceCard)
-        .border(
-          1.dp,
-          if (isSendEnabled) DvexNeonRedBright else DvexBorderMuted,
-          CutCornerShape(3.dp)
-        )
-        .clickable(enabled = isSendEnabled) {
-          if (commandText.isNotBlank()) {
-            val cmd = commandText.trim()
-            commandText = ""
-            keyboardController?.hide()
-            focusManager.clearFocus()
-            onSendCommand(cmd)
-          }
-        }
-        .padding(horizontal = 10.dp, vertical = 6.dp),
-      contentAlignment = Alignment.Center
-    ) {
-      Row(verticalAlignment = Alignment.CenterVertically) {
-        Icon(
-          imageVector = Icons.AutoMirrored.Filled.Send,
-          contentDescription = "Send tactical command",
-          tint = if (isSendEnabled) Color.White else DvexTextMuted,
-          modifier = Modifier.size(13.dp)
-        )
-        Spacer(modifier = Modifier.width(4.dp))
-        Text(
-          text = "SEND",
-          fontFamily = FontFamily.Monospace,
-          fontSize = 9.sp,
-          fontWeight = FontWeight.Bold,
-          letterSpacing = 1.sp,
-          color = if (isSendEnabled) Color.White else DvexTextMuted
+  // Single glass popup layer above everything (overlays — never reflows the HUD).
+  val modeManager = PowerModeManager.getInstance(context)
+  HudPanelPopupLayer(
+    activePanel = activePanel,
+    onSelect = selectPanel,
+    uiState = uiState,
+    powerModeEnabled = powerModeEnabled,
+    settings = settings,
+    onSelectStandard = {
+      modeManager.setEnabled(false)
+      selectPanel(DvexActivePanel.NONE)
+    },
+    onSelectPower = {
+      modeManager.setEnabled(true)
+      selectPanel(DvexActivePanel.NONE)
+    },
+    onSendCommand = { cmd -> onSendCommand?.invoke(cmd) },
+    onOrbToggleRequested = { enable -> onOrbToggleRequested?.invoke(enable) },
+    onQuickActionSelected = { action ->
+      if (onQuickActionSelected != null) {
+        onQuickActionSelected(action)
+      } else {
+        onUiStateChange(
+          uiState.copy(
+            responseText = "Quick access: $action triggered in HUD.",
+            aiState = AiCoreState.PROCESSING
+          )
         )
       }
-    }
-  }
+    },
+    onRecentAppsRequested = { onRecentAppsRequested?.invoke() }
+  )
 }
-

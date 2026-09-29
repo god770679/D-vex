@@ -233,6 +233,42 @@ class DvexAccessibilityService : AccessibilityService() {
       }
       return success
     }
+
+    /** Clears an editable field (delegates to the verified [setTextInNode] path). */
+    fun clearTextInNode(node: AccessibilityNodeInfo): Boolean = setTextInNode(node, "")
+
+    /**
+     * Submits the currently focused editor by activating a visible search/submit
+     * control (Search / Go / Enter / Next). Returns false honestly when no such
+     * control is visible — never pretends a submit happened.
+     */
+    fun submitVisibleSearchControl(): Boolean {
+      val labels = listOf("search", "go", "enter", "next", "done", "submit", "தேடு")
+      for (label in labels) {
+        val node = findNodesByText(label).firstOrNull { it.isVisibleToUser } ?: continue
+        if (clickNode(node)) {
+          Log.i(TAG, "Submitted via visible control: $label")
+          return true
+        }
+      }
+      return false
+    }
+
+    /**
+     * Focuses the first editable field (or a field identified by [hint]) so text can
+     * be typed into the app D-VEX is currently controlling.
+     */
+    fun focusEditableField(hint: String? = null): AccessibilityNodeInfo? {
+      if (!hint.isNullOrBlank()) {
+        findNodesByText(hint).firstOrNull { it.isEditable && it.isVisibleToUser }?.let { return it }
+      }
+      return findNodes { it.isEditable && it.isVisibleToUser }
+        .maxByOrNull { node ->
+          val rect = android.graphics.Rect()
+          node.getBoundsInScreen(rect)
+          rect.bottom
+        }
+    }
   }
 }
 

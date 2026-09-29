@@ -25,6 +25,11 @@ import androidx.compose.material.icons.filled.Sms
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontFamily
@@ -40,17 +45,55 @@ import com.example.ui.theme.DvexNeonRedDim
 import com.example.ui.theme.DvexTextMuted
 import com.example.ui.theme.DvexTextPrimary
 import com.example.ui.theme.DvexTextSecondary
+import kotlinx.coroutines.delay
+import java.text.SimpleDateFormat
+import java.util.Calendar
+import java.util.Date
+import java.util.Locale
+import kotlin.math.abs
 
 /**
- * 1. CURRENT TIME PANEL
+ * 1. CURRENT TIME PANEL — live device clock (Bug regression fix).
+ *
+ * Previously rendered hardcoded "08:45 PM" / "SATURDAY" / "22 AUG 2026" strings —
+ * the panel looked permanently stuck. Now a one-second coroutine ticker re-reads
+ * System.currentTimeMillis() every second so the displayed time is always live.
  */
 @Composable
 fun TimePanel(
-  modifier: Modifier = Modifier
+  modifier: Modifier = Modifier,
+  timeSource: () -> Long = { System.currentTimeMillis() }
 ) {
+  var nowMs by remember { mutableStateOf(timeSource()) }
+
+  // Live tick: refresh every second so the clock visibly advances.
+  LaunchedEffect(Unit) {
+    while (true) {
+      nowMs = timeSource()
+      delay(1_000L)
+    }
+  }
+
+  val calendar = remember(nowMs) { Calendar.getInstance().apply { timeInMillis = nowMs } }
+  val timeText = remember(nowMs) {
+    SimpleDateFormat("hh:mm a", Locale.getDefault()).format(Date(nowMs)).uppercase(Locale.getDefault())
+  }
+  val dayText = remember(nowMs) {
+    SimpleDateFormat("EEEE", Locale.getDefault()).format(Date(nowMs)).uppercase(Locale.getDefault())
+  }
+  val dateText = remember(nowMs) {
+    SimpleDateFormat("dd MMM yyyy", Locale.getDefault()).format(Date(nowMs)).uppercase(Locale.getDefault())
+  }
+  val tzOffsetLabel = remember(nowMs) {
+    val offsetMinutes = calendar.get(Calendar.ZONE_OFFSET) / 60_000
+    val sign = if (offsetMinutes >= 0) "+" else "-"
+    val absMin = abs(offsetMinutes)
+    "UTC${sign}%02d:%02d".format(absMin / 60, absMin % 60)
+  }
+
   TacticalPanel(
     title = "Current Time",
-    headerTag = "CHRONO // UTC+5:30",
+    headerTag = "CHRONO // $tzOffsetLabel // LIVE",
     modifier = modifier
   ) {
     Column(
@@ -64,7 +107,7 @@ fun TimePanel(
         verticalAlignment = Alignment.Bottom
       ) {
         Text(
-          text = "08:45 PM",
+          text = timeText,
           fontFamily = FontFamily.Monospace,
           fontSize = 24.sp,
           fontWeight = FontWeight.Black,
@@ -72,7 +115,7 @@ fun TimePanel(
           letterSpacing = 1.sp
         )
         Text(
-          text = "SATURDAY",
+          text = dayText,
           fontFamily = FontFamily.Monospace,
           fontSize = 10.sp,
           fontWeight = FontWeight.Bold,
@@ -81,7 +124,7 @@ fun TimePanel(
       }
       Spacer(modifier = Modifier.height(2.dp))
       Text(
-        text = "22 AUG 2026 // EPOCH SYNC: 1787492100",
+        text = "$dateText // EPOCH SYNC: ${nowMs / 1000L}",
         fontFamily = FontFamily.Monospace,
         fontSize = 8.sp,
         color = DvexTextMuted,
@@ -92,7 +135,11 @@ fun TimePanel(
 }
 
 /**
- * 2. LOCATION PANEL
+ * 2. LOCATION PANEL — honest GPS state (Bug regression fix).
+ *
+ * Previously showed fabricated "CHENNAI / 13.0827° N / GPS LOCK: 9 SATS / +/- 2M"
+ * regardless of the real fix. Now renders real device fix data when available and
+ * an explicit STANDBY state when no fix exists — never fake coordinates.
  */
 @Composable
 fun LocationPanel(
@@ -101,9 +148,33 @@ fun LocationPanel(
 ) {
   TacticalPanel(
     title = "Geo Coordinates",
-    headerTag = "GPS LOCK: 9 SATS",
+    headerTag = if (location.hasData) "GPS LOCK LIVE" else "NO GPS FIX",
     modifier = modifier
   ) {
+    if (!location.hasData) {
+      // Honest standby: no fabricated city/coords, guidance to trigger a fix.
+      Column(
+        modifier = Modifier
+          .fillMaxWidth()
+          .padding(10.dp)
+      ) {
+        Text(
+          text = "NO DEVICE FIX",
+          fontFamily = FontFamily.Monospace,
+          fontSize = 9.sp,
+          fontWeight = FontWeight.Bold,
+          color = DvexTextMuted,
+          letterSpacing = 1.sp
+        )
+        Spacer(modifier = Modifier.height(4.dp))
+        Text(
+          text = "Coordinates appear after a real GPS fix. Say \"weather\" to trigger a location scan.",
+          fontFamily = FontFamily.Monospace,
+          fontSize = 8.sp,
+          color = DvexTextMuted
+        )
+      }
+    } else {
     Row(
       modifier = Modifier
         .fillMaxWidth()
@@ -113,7 +184,7 @@ fun LocationPanel(
     ) {
       Column {
         Text(
-          text = location.city.uppercase(),
+          text = (location.city.ifBlank { "UNKNOWN AREA" }).uppercase(),
           fontFamily = FontFamily.Monospace,
           fontSize = 16.sp,
           fontWeight = FontWeight.Bold,
@@ -129,7 +200,12 @@ fun LocationPanel(
           letterSpacing = 0.5.sp
         )
         Text(
-          text = "ALT: ${location.altitudeMeters}M // ACCURACY: +/- 2M",
+          text = buildString {
+            append("ALT: ")
+            append(location.altitudeMeters?.let { "${it}M" } ?: "N/A")
+            append(" // ACCURACY: ")
+            append(location.accuracyMeters?.let { "+/- ${it}M" } ?: "N/A")
+          },
           fontFamily = FontFamily.Monospace,
           fontSize = 8.sp,
           color = DvexTextMuted
@@ -142,6 +218,7 @@ fun LocationPanel(
         tint = DvexNeonRed,
         modifier = Modifier.size(28.dp)
       )
+    }
     }
   }
 }

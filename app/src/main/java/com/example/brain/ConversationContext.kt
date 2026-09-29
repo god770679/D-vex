@@ -143,8 +143,10 @@ class ConversationContext(private val maxHistorySize: Int = 6) {
     if (lower == "tomorrow" || lower == "what about tomorrow" || lower == "how about tomorrow" ||
         lower == "and tomorrow" || lower == "naalai" || lower == "naalaiku" || lower.contains("naalai")) {
       if (lastWeatherLocation != null || lastIntent is DvexIntent.GetWeather) {
-        val city = lastWeatherLocation ?: "Chennai"
-        return DvexIntent.GetWeather(location = city, isTomorrow = true)
+        // Follow-up like "Tomorrow?" — reuse the previously resolved city. When no city
+        // was resolved before, pass null so the router uses real device location again
+        // (never a hardcoded default).
+        return DvexIntent.GetWeather(location = lastWeatherLocation, isTomorrow = true)
       }
     }
 

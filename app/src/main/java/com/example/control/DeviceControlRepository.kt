@@ -39,10 +39,10 @@ class DeviceControlRepository(
         addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
       }
       context.startActivity(intent)
-      ToolExecutionResult(ToolResultStatus.SUCCESS, "camera", "Opening Camera, Sir.")
+      ToolExecutionResult(ToolResultStatus.SUCCESS, "camera", "Opening Camera.")
     } catch (e: Exception) {
       Log.e(TAG, "Camera open failed", e)
-      ToolExecutionResult(ToolResultStatus.FAILED, "camera", "Unable to launch camera app, Sir.")
+      ToolExecutionResult(ToolResultStatus.FAILED, "camera", "Unable to launch camera app.")
     }
   }
 
@@ -52,10 +52,10 @@ class DeviceControlRepository(
         addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
       }
       context.startActivity(intent)
-      ToolExecutionResult(ToolResultStatus.SUCCESS, "settings", "Opening Settings, Sir.")
+      ToolExecutionResult(ToolResultStatus.SUCCESS, "settings", "Opening Settings.")
     } catch (e: Exception) {
       Log.e(TAG, "Settings open failed", e)
-      ToolExecutionResult(ToolResultStatus.FAILED, "settings", "Unable to open Settings, Sir.")
+      ToolExecutionResult(ToolResultStatus.FAILED, "settings", "Unable to open Settings.")
     }
   }
 
@@ -66,17 +66,17 @@ class DeviceControlRepository(
           addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         }
         context.startActivity(intent)
-        ToolExecutionResult(ToolResultStatus.SUCCESS, "wifi_panel", "Opening Internet & Wi-Fi settings, Sir.")
+        ToolExecutionResult(ToolResultStatus.SUCCESS, "wifi_panel", "Opening Internet & Wi-Fi settings.")
       } else {
         val intent = Intent(Settings.ACTION_WIFI_SETTINGS).apply {
           addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         }
         context.startActivity(intent)
-        ToolExecutionResult(ToolResultStatus.SUCCESS, "wifi_settings", "Opening Wi-Fi settings, Sir.")
+        ToolExecutionResult(ToolResultStatus.SUCCESS, "wifi_settings", "Opening Wi-Fi settings.")
       }
     } catch (e: Exception) {
       Log.e(TAG, "Wi-Fi settings open failed", e)
-      ToolExecutionResult(ToolResultStatus.FAILED, "wifi", "Unable to open Wi-Fi controls, Sir.")
+      ToolExecutionResult(ToolResultStatus.FAILED, "wifi", "Unable to open Wi-Fi controls.")
     }
   }
 
@@ -94,7 +94,7 @@ class DeviceControlRepository(
       ToolExecutionResult(
         ToolResultStatus.SUCCESS,
         "maps",
-        if (query.isNullOrBlank()) "Opening Maps, Sir." else "Searching Maps for $query, Sir."
+        if (query.isNullOrBlank()) "Opening Maps." else "Searching Maps for $query."
       )
     } catch (e: Exception) {
       // Fallback to app launcher or browser maps
@@ -103,22 +103,102 @@ class DeviceControlRepository(
   }
 
   fun openYouTube(query: String? = null): ToolExecutionResult {
+    val youtubePackage = "com.google.android.youtube"
+    val ytInstalled = appLauncher.isPackageInstalled(youtubePackage)
+    val targetUri = if (!query.isNullOrBlank()) {
+      Uri.parse("https://www.youtube.com/results?search_query=${Uri.encode(query)}")
+    } else {
+      Uri.parse("https://www.youtube.com")
+    }
+    val intent = Intent(Intent.ACTION_VIEW, targetUri).apply {
+      addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+      // Prefer the dedicated YouTube app so the deep link opens the app, not a browser.
+      if (ytInstalled) setPackage(youtubePackage)
+    }
+
+    val canResolve = try {
+      intent.resolveActivity(context.packageManager) != null
+    } catch (_: Exception) {
+      false
+    }
+
+    // No YouTube app and no browser able to handle the link: report the real state.
+    if (!canResolve) {
+      return ToolExecutionResult(
+        ToolResultStatus.FAILED,
+        "youtube",
+        "YouTube install pannirukkala. Search panna mudiyala."
+      )
+    }
+
     return try {
-      val intent = if (!query.isNullOrBlank()) {
-        Intent(Intent.ACTION_VIEW, Uri.parse("https://www.youtube.com/results?search_query=${Uri.encode(query)}"))
-      } else {
-        Intent(Intent.ACTION_VIEW, Uri.parse("https://www.youtube.com"))
-      }.apply {
-        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-      }
       context.startActivity(intent)
       ToolExecutionResult(
         ToolResultStatus.SUCCESS,
         "youtube",
-        if (query.isNullOrBlank()) "Opening YouTube, Sir." else "Searching YouTube for $query, Sir."
+        if (query.isNullOrBlank()) "YouTube open pannen."
+        else "YouTube-la \"$query\" search results open pannen."
       )
     } catch (e: Exception) {
-      appLauncher.launchAppByName("youtube")
+      Log.e(TAG, "YouTube open failed; attempting browser search fallback", e)
+      if (query.isNullOrBlank()) {
+        ToolExecutionResult(ToolResultStatus.FAILED, "youtube", "YouTube open panna mudiyala.")
+      } else {
+        // Real fallback: search the same query in the browser instead of failing silently.
+        val fallback = openBrowser(query)
+        if (fallback.status == ToolResultStatus.SUCCESS) {
+          ToolExecutionResult(
+            ToolResultStatus.SUCCESS,
+            "youtube_browser_fallback",
+            "YouTube open panna mudiyala. Browser-la \"$query\" search open pannen."
+          )
+        } else {
+          ToolExecutionResult(
+            ToolResultStatus.FAILED,
+            "youtube",
+            "YouTube-um browser-um open aagala."
+          )
+        }
+      }
+    }
+  }
+
+  /**
+   * Opens a real Android system settings screen. D-VEX never changes the setting
+   * itself — it navigates the user to the platform screen, which is the only
+   * supported and safe approach.
+   */
+  fun openSystemSettings(kind: com.example.brain.SystemSettingsKind): ToolExecutionResult {
+    val action = when (kind) {
+      com.example.brain.SystemSettingsKind.BLUETOOTH -> Settings.ACTION_BLUETOOTH_SETTINGS
+      com.example.brain.SystemSettingsKind.DISPLAY -> Settings.ACTION_DISPLAY_SETTINGS
+      com.example.brain.SystemSettingsKind.DATE_TIME -> Settings.ACTION_DATE_SETTINGS
+      com.example.brain.SystemSettingsKind.LOCATION -> Settings.ACTION_LOCATION_SOURCE_SETTINGS
+      com.example.brain.SystemSettingsKind.NOTIFICATION -> Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS
+      com.example.brain.SystemSettingsKind.ACCESSIBILITY -> Settings.ACTION_ACCESSIBILITY_SETTINGS
+    }
+    return try {
+      val intent = Intent(action).apply { addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) }
+      if (intent.resolveActivity(context.packageManager) == null) {
+        return ToolExecutionResult(
+          ToolResultStatus.FAILED,
+          "system_settings",
+          "${kind.displayName} isn't available on this device."
+        )
+      }
+      context.startActivity(intent)
+      ToolExecutionResult(
+        ToolResultStatus.SUCCESS,
+        "system_settings",
+        "Opening ${kind.displayName}."
+      )
+    } catch (e: Exception) {
+      Log.e(TAG, "Failed to open ${kind.displayName}", e)
+      ToolExecutionResult(
+        ToolResultStatus.FAILED,
+        "system_settings",
+        "Couldn't open ${kind.displayName}."
+      )
     }
   }
 
@@ -133,10 +213,10 @@ class DeviceControlRepository(
         addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
       }
       context.startActivity(intent)
-      ToolExecutionResult(ToolResultStatus.SUCCESS, "browser", "Opening browser, Sir.")
+      ToolExecutionResult(ToolResultStatus.SUCCESS, "browser", "Opening browser.")
     } catch (e: Exception) {
       Log.e(TAG, "Browser open failed", e)
-      ToolExecutionResult(ToolResultStatus.FAILED, "browser", "Unable to open browser, Sir.")
+      ToolExecutionResult(ToolResultStatus.FAILED, "browser", "Unable to open browser.")
     }
   }
 
@@ -154,18 +234,18 @@ class DeviceControlRepository(
       ToolExecutionResult(
         ToolResultStatus.SUCCESS,
         "phone",
-        if (number.isNullOrBlank()) "Opening dialer, Sir." else "Preparing call to $number in dialer, Sir."
+        if (number.isNullOrBlank()) "Opening dialer." else "Preparing call to $number in dialer."
       )
     } catch (e: Exception) {
       Log.e(TAG, "Phone dialer failed", e)
-      ToolExecutionResult(ToolResultStatus.FAILED, "phone", "Unable to open phone dialer, Sir.")
+      ToolExecutionResult(ToolResultStatus.FAILED, "phone", "Unable to open phone dialer.")
     }
   }
 
   fun makePhoneCall(phoneNumber: String, contactName: String? = null): ToolExecutionResult {
     val cleanNumber = phoneNumber.replace(Regex("[^0-9+]"), "")
     if (cleanNumber.isBlank()) {
-      return ToolExecutionResult(ToolResultStatus.FAILED, "call", "Invalid phone number, Sir.")
+      return ToolExecutionResult(ToolResultStatus.FAILED, "call", "Invalid phone number.")
     }
     val displayName = contactName ?: phoneNumber
     return try {
@@ -179,27 +259,27 @@ class DeviceControlRepository(
           addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         }
         context.startActivity(intent)
-        ToolExecutionResult(ToolResultStatus.SUCCESS, "call", "Okay Sir. Calling $displayName.")
+        ToolExecutionResult(ToolResultStatus.SUCCESS, "call", "Calling $displayName.")
       } else {
         ToolExecutionResult(
           ToolResultStatus.NEEDS_PERMISSION,
           "call",
-          "Sir, Call permission is required to place the call automatically."
+          "Call permission is required to place the call automatically."
         )
       }
     } catch (e: Exception) {
       Log.e(TAG, "Call execution failed", e)
-      ToolExecutionResult(ToolResultStatus.FAILED, "call", "Unable to place call to $displayName, Sir.")
+      ToolExecutionResult(ToolResultStatus.FAILED, "call", "Unable to place call to $displayName.")
     }
   }
 
   fun sendSmsDirect(phoneNumber: String, messageText: String, contactName: String? = null): ToolExecutionResult {
     val cleanNumber = phoneNumber.replace(Regex("[^0-9+]"), "")
     if (cleanNumber.isBlank()) {
-      return ToolExecutionResult(ToolResultStatus.FAILED, "send_sms", "Invalid phone number, Sir.")
+      return ToolExecutionResult(ToolResultStatus.FAILED, "send_sms", "Invalid phone number.")
     }
     if (messageText.isBlank()) {
-      return ToolExecutionResult(ToolResultStatus.FAILED, "send_sms", "Message cannot be empty, Sir.")
+      return ToolExecutionResult(ToolResultStatus.FAILED, "send_sms", "Message cannot be empty.")
     }
     val displayName = contactName ?: phoneNumber
 
@@ -212,7 +292,7 @@ class DeviceControlRepository(
       return ToolExecutionResult(
         ToolResultStatus.NEEDS_PERMISSION,
         "send_sms",
-        "Sir, SMS permission கிடைக்கல. Permission allow பண்ணுங்க."
+        "SMS permission கிடைக்கல. Permission allow பண்ணுங்க."
       )
     }
 
@@ -235,14 +315,14 @@ class DeviceControlRepository(
       ToolExecutionResult(
         ToolResultStatus.SUCCESS,
         "send_sms",
-        "Sir, $displayName-ku message anuppiyachu."
+        "$displayName-ku message anuppiyachu."
       )
     } catch (e: Exception) {
       Log.e(TAG, "SMS sending failed via SmsManager", e)
       ToolExecutionResult(
         ToolResultStatus.FAILED,
         "send_sms",
-        "Sir, message anuppa mudiyala: ${e.message ?: "Failed"}."
+        "message anuppa mudiyala: ${e.message ?: "Failed"}."
       )
     }
   }
@@ -265,10 +345,10 @@ class DeviceControlRepository(
         addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
       }
       context.startActivity(intent)
-      ToolExecutionResult(ToolResultStatus.SUCCESS, "send_sms", "Opening SMS composer, Sir.")
+      ToolExecutionResult(ToolResultStatus.SUCCESS, "send_sms", "Opening SMS composer.")
     } catch (e: Exception) {
       Log.e(TAG, "SMS composer failed", e)
-      ToolExecutionResult(ToolResultStatus.FAILED, "send_sms", "Unable to open SMS composer, Sir.")
+      ToolExecutionResult(ToolResultStatus.FAILED, "send_sms", "Unable to open SMS composer.")
     }
   }
 
@@ -288,14 +368,14 @@ class DeviceControlRepository(
       ToolExecutionResult(
         ToolResultStatus.SUCCESS,
         "send_email",
-        "Sir, $recipient-ku email anuppa composer open panniyachu."
+        "$recipient-ku email anuppa composer open panniyachu."
       )
     } catch (e: Exception) {
       Log.e(TAG, "Failed to open email composer", e)
       ToolExecutionResult(
         ToolResultStatus.FAILED,
         "send_email",
-        "Sir, email anuppa mudiyala: ${e.message ?: "Failed"}."
+        "email anuppa mudiyala: ${e.message ?: "Failed"}."
       )
     }
   }
@@ -323,7 +403,7 @@ class DeviceControlRepository(
       return ToolExecutionResult(
         ToolResultStatus.FAILED,
         "whatsapp",
-        "Sir, WhatsApp install aagala."
+        "WhatsApp install aagala."
       )
     }
 
@@ -339,14 +419,14 @@ class DeviceControlRepository(
       ToolExecutionResult(
         ToolResultStatus.SUCCESS,
         "whatsapp",
-        "Sir, $name-ku WhatsApp-la message anuppiyachu."
+        "$name-ku WhatsApp-la message anuppiyachu."
       )
     } catch (e: Exception) {
       Log.e(TAG, "Failed to send WhatsApp message", e)
       ToolExecutionResult(
         ToolResultStatus.FAILED,
         "whatsapp",
-        "Sir, WhatsApp message anuppa mudiyala."
+        "WhatsApp message anuppa mudiyala."
       )
     }
   }
@@ -362,11 +442,11 @@ class DeviceControlRepository(
       val targetState = enable ?: !isTorchOn
       cm.setTorchMode(cameraId, targetState)
       isTorchOn = targetState
-      val stateText = if (targetState) "Flashlight turned on, Sir." else "Flashlight turned off, Sir."
+      val stateText = if (targetState) "Flashlight turned on." else "Flashlight turned off."
       ToolExecutionResult(ToolResultStatus.SUCCESS, "flashlight", stateText)
     } catch (e: Exception) {
       Log.e(TAG, "Flashlight toggle failed", e)
-      ToolExecutionResult(ToolResultStatus.FAILED, "flashlight", "Unable to toggle flashlight, Sir.")
+      ToolExecutionResult(ToolResultStatus.FAILED, "flashlight", "Unable to toggle flashlight.")
     }
   }
 
@@ -383,10 +463,10 @@ class DeviceControlRepository(
       }
       context.startActivity(intent)
       val timeStr = String.format("%02d:%02d", hour, minute)
-      ToolExecutionResult(ToolResultStatus.SUCCESS, "set_alarm", "Alarm set for $timeStr, Sir.")
+      ToolExecutionResult(ToolResultStatus.SUCCESS, "set_alarm", "Alarm set for $timeStr.")
     } catch (e: Exception) {
       Log.e(TAG, "Setting alarm failed", e)
-      ToolExecutionResult(ToolResultStatus.FAILED, "set_alarm", "Unable to set alarm, Sir.")
+      ToolExecutionResult(ToolResultStatus.FAILED, "set_alarm", "Unable to set alarm.")
     }
   }
 
@@ -404,10 +484,10 @@ class DeviceControlRepository(
       val min = seconds / 60
       val sec = seconds % 60
       val label = if (min > 0 && sec > 0) "$min minutes $sec seconds" else if (min > 0) "$min minutes" else "$sec seconds"
-      ToolExecutionResult(ToolResultStatus.SUCCESS, "set_timer", "Timer set for $label, Sir.")
+      ToolExecutionResult(ToolResultStatus.SUCCESS, "set_timer", "Timer set for $label.")
     } catch (e: Exception) {
       Log.e(TAG, "Setting timer failed", e)
-      ToolExecutionResult(ToolResultStatus.FAILED, "set_timer", "Unable to set timer, Sir.")
+      ToolExecutionResult(ToolResultStatus.FAILED, "set_timer", "Unable to set timer.")
     }
   }
 
@@ -425,14 +505,14 @@ class DeviceControlRepository(
         ToolResultStatus.SUCCESS,
         "volume",
         when (direction) {
-          VolumeDirection.UP -> "Volume increased, Sir."
-          VolumeDirection.DOWN -> "Volume decreased, Sir."
-          VolumeDirection.MUTE -> "Volume level updated, Sir."
+          VolumeDirection.UP -> "Volume increased."
+          VolumeDirection.DOWN -> "Volume decreased."
+          VolumeDirection.MUTE -> "Volume level updated."
         }
       )
     } catch (e: Exception) {
       Log.e(TAG, "Volume adjust failed", e)
-      ToolExecutionResult(ToolResultStatus.FAILED, "volume", "Volume adjustment failed, Sir.")
+      ToolExecutionResult(ToolResultStatus.FAILED, "volume", "Volume adjustment failed.")
     }
   }
 
@@ -450,14 +530,14 @@ class DeviceControlRepository(
         ToolResultStatus.SUCCESS,
         "media",
         when (command) {
-          MediaCommand.PLAY_PAUSE -> "Toggled media playback, Sir."
-          MediaCommand.NEXT -> "Skipped to next track, Sir."
-          MediaCommand.PREVIOUS -> "Returned to previous track, Sir."
+          MediaCommand.PLAY_PAUSE -> "Toggled media playback."
+          MediaCommand.NEXT -> "Skipped to next track."
+          MediaCommand.PREVIOUS -> "Returned to previous track."
         }
       )
     } catch (e: Exception) {
       Log.e(TAG, "Media control failed", e)
-      ToolExecutionResult(ToolResultStatus.FAILED, "media", "Media playback command failed, Sir.")
+      ToolExecutionResult(ToolResultStatus.FAILED, "media", "Media playback command failed.")
     }
   }
 
@@ -467,7 +547,7 @@ class DeviceControlRepository(
         addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
       }
       context.startActivity(musicIntent)
-      ToolExecutionResult(ToolResultStatus.SUCCESS, "music", "Opening Music player, Sir.")
+      ToolExecutionResult(ToolResultStatus.SUCCESS, "music", "Opening Music player.")
     } catch (e: Exception) {
       try {
         @Suppress("DEPRECATION")
@@ -475,13 +555,13 @@ class DeviceControlRepository(
           addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         }
         context.startActivity(fallbackIntent)
-        ToolExecutionResult(ToolResultStatus.SUCCESS, "music", "Opening Music player, Sir.")
+        ToolExecutionResult(ToolResultStatus.SUCCESS, "music", "Opening Music player.")
       } catch (e2: Exception) {
         val appResult = appLauncher.launchAppByName("music")
         if (appResult.isSuccessful) {
           appResult
         } else {
-          ToolExecutionResult(ToolResultStatus.FAILED, "music", "No music player found on device, Sir.")
+          ToolExecutionResult(ToolResultStatus.FAILED, "music", "No music player found on device.")
         }
       }
     }
@@ -491,9 +571,9 @@ class DeviceControlRepository(
     return if (DvexAccessibilityService.isEnabled(context)) {
       val success = DvexAccessibilityService.performHome()
       if (success) {
-        ToolExecutionResult(ToolResultStatus.SUCCESS, "home", "Done, Sir.")
+        ToolExecutionResult(ToolResultStatus.SUCCESS, "home", "Done.")
       } else {
-        ToolExecutionResult(ToolResultStatus.FAILED, "home", "Navigation action failed, Sir.")
+        ToolExecutionResult(ToolResultStatus.FAILED, "home", "Navigation action failed.")
       }
     } else {
       // Fallback standard Intent launcher for Home
@@ -503,12 +583,12 @@ class DeviceControlRepository(
           addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         }
         context.startActivity(homeIntent)
-        ToolExecutionResult(ToolResultStatus.SUCCESS, "home", "Done, Sir.")
+        ToolExecutionResult(ToolResultStatus.SUCCESS, "home", "Done.")
       } catch (e: Exception) {
         ToolExecutionResult(
           ToolResultStatus.NEEDS_PERMISSION,
           "home",
-          "Accessibility Service authorization required for direct system navigation, Sir."
+          "Accessibility Service authorization required for direct system navigation."
         )
       }
     }
@@ -518,15 +598,15 @@ class DeviceControlRepository(
     return if (DvexAccessibilityService.isEnabled(context)) {
       val success = DvexAccessibilityService.performBack()
       if (success) {
-        ToolExecutionResult(ToolResultStatus.SUCCESS, "back", "Done, Sir.")
+        ToolExecutionResult(ToolResultStatus.SUCCESS, "back", "Done.")
       } else {
-        ToolExecutionResult(ToolResultStatus.FAILED, "back", "Back action failed, Sir.")
+        ToolExecutionResult(ToolResultStatus.FAILED, "back", "Back action failed.")
       }
     } else {
       ToolExecutionResult(
         ToolResultStatus.NEEDS_PERMISSION,
         "back",
-        "Enable D-VEX Accessibility Service in Settings to allow the Back command, Sir."
+        "Enable D-VEX Accessibility Service in Settings to allow the Back command."
       )
     }
   }
@@ -535,15 +615,15 @@ class DeviceControlRepository(
     return if (DvexAccessibilityService.isEnabled(context)) {
       val success = DvexAccessibilityService.performRecents()
       if (success) {
-        ToolExecutionResult(ToolResultStatus.SUCCESS, "recents", "Showing recent applications, Sir.")
+        ToolExecutionResult(ToolResultStatus.SUCCESS, "recents", "Showing recent applications.")
       } else {
-        ToolExecutionResult(ToolResultStatus.FAILED, "recents", "Recents action failed, Sir.")
+        ToolExecutionResult(ToolResultStatus.FAILED, "recents", "Recents action failed.")
       }
     } else {
       ToolExecutionResult(
         ToolResultStatus.NEEDS_PERMISSION,
         "recents",
-        "Enable D-VEX Accessibility Service in Settings to allow Recents view, Sir."
+        "Enable D-VEX Accessibility Service in Settings to allow Recents view."
       )
     }
   }
@@ -552,15 +632,15 @@ class DeviceControlRepository(
     return if (DvexAccessibilityService.isEnabled(context)) {
       val success = DvexAccessibilityService.performNotifications()
       if (success) {
-        ToolExecutionResult(ToolResultStatus.SUCCESS, "notifications", "Opening notifications, Sir.")
+        ToolExecutionResult(ToolResultStatus.SUCCESS, "notifications", "Opening notifications.")
       } else {
-        ToolExecutionResult(ToolResultStatus.FAILED, "notifications", "Notifications shade failed, Sir.")
+        ToolExecutionResult(ToolResultStatus.FAILED, "notifications", "Notifications shade failed.")
       }
     } else {
       ToolExecutionResult(
         ToolResultStatus.NEEDS_PERMISSION,
         "notifications",
-        "Enable D-VEX Accessibility Service to open notifications, Sir."
+        "Enable D-VEX Accessibility Service to open notifications."
       )
     }
   }
@@ -569,15 +649,15 @@ class DeviceControlRepository(
     return if (DvexAccessibilityService.isEnabled(context)) {
       val success = DvexAccessibilityService.performScrollDown()
       if (success) {
-        ToolExecutionResult(ToolResultStatus.SUCCESS, "scroll_down", "Scrolled down, Sir.")
+        ToolExecutionResult(ToolResultStatus.SUCCESS, "scroll_down", "Scrolled down.")
       } else {
-        ToolExecutionResult(ToolResultStatus.FAILED, "scroll_down", "Unable to scroll down, Sir.")
+        ToolExecutionResult(ToolResultStatus.FAILED, "scroll_down", "Unable to scroll down.")
       }
     } else {
       ToolExecutionResult(
         ToolResultStatus.NEEDS_PERMISSION,
         "scroll_down",
-        "Enable D-VEX Accessibility Service in Settings to allow scrolling, Sir."
+        "Enable D-VEX Accessibility Service in Settings to allow scrolling."
       )
     }
   }
@@ -586,15 +666,15 @@ class DeviceControlRepository(
     return if (DvexAccessibilityService.isEnabled(context)) {
       val success = DvexAccessibilityService.performScrollUp()
       if (success) {
-        ToolExecutionResult(ToolResultStatus.SUCCESS, "scroll_up", "Scrolled up, Sir.")
+        ToolExecutionResult(ToolResultStatus.SUCCESS, "scroll_up", "Scrolled up.")
       } else {
-        ToolExecutionResult(ToolResultStatus.FAILED, "scroll_up", "Unable to scroll up, Sir.")
+        ToolExecutionResult(ToolResultStatus.FAILED, "scroll_up", "Unable to scroll up.")
       }
     } else {
       ToolExecutionResult(
         ToolResultStatus.NEEDS_PERMISSION,
         "scroll_up",
-        "Enable D-VEX Accessibility Service in Settings to allow scrolling, Sir."
+        "Enable D-VEX Accessibility Service in Settings to allow scrolling."
       )
     }
   }
