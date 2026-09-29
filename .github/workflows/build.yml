@@ -27,12 +27,14 @@ jobs:
       - name: Checkout main
         uses: actions/checkout@v4
 
-      # AGP 9.x requires JDK 17 (Gradle 9.1+ is the minimum for this project).
-      - name: Set up JDK 17
+      # JDK 21 is required by Robolectric's Android SDK 36 sandbox ("Android SDK 36
+      # requires Java 21"). JDK 17 builds the APK fine but fails every Robolectric
+      # test at sandbox creation, so the runner must match the local toolchain.
+      - name: Set up JDK 21
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '17'
+          java-version: '21'
 
       # Installs the command-line tools and accepts the SDK licences, which lets
       # AGP auto-download the exact platform/build-tools the project requests
