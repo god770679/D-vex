@@ -1,9 +1,12 @@
 name: Build and Release APK
 
 # Runs on every push to main (so a Freebuff Changes-panel save triggers it
-# automatically) and can be started by hand from the Actions tab.
+# automatically), on every PR targeting main (so an integration branch is
+# validated before review), and can be started by hand from the Actions tab.
 on:
   push:
+    branches: [ main ]
+  pull_request:
     branches: [ main ]
   workflow_dispatch:
 
@@ -99,9 +102,11 @@ jobs:
           if-no-files-found: ignore
 
       # Only runs when every previous step succeeded, so a failed build can never
-      # publish a release.
+      # publish a release. It is additionally skipped for pull_request runs: an
+      # unmerged PR must never overwrite the published build-64 APK. Pushes to main
+      # and manual dispatch are unaffected.
       - name: Publish build-64 release
-        if: success()
+        if: success() && github.event_name != 'pull_request'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: build-64
