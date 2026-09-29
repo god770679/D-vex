@@ -58,6 +58,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.camera.view.PreviewView
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import com.example.mode.VisionRequestGate
 import com.example.model.NotificationItem
 import com.example.model.SystemVitals
 import com.example.model.WeatherInfo
@@ -539,10 +540,21 @@ fun CameraVisionPanel(
     ActivityResultContracts.RequestPermission()
   ) { isGranted ->
     cameraPermissionGranted = isGranted
+    if (!isGranted) {
+      // Denial must leave the single vision authority OFF. VisionRequestGate is the
+      // only vision-request state in D-VEX; leaving it requested=true after a denial
+      // would strand the request for the rest of the process. This mirrors the
+      // existing denial handling in PowerModeButtonCluster and uses the same gate
+      // API — no second vision manager, no persisted flag, no new StateFlow.
+      VisionRequestGate.resetForTesting()
+    }
   }
 
   // Vision is only "active" when the user both asked for it AND granted the camera.
-  val visionActive = isVisionActive || cameraPermissionGranted
+  // Both conditions are required: a denied permission must never leave the panel
+  // claiming OPTICAL ACTIVE / AI VISION ACTIVE / OPTICAL SENSOR ACTIVE while the
+  // honest permission-required body is showing instead of a feed.
+  val visionActive = isVisionActive && cameraPermissionGranted
 
   TacticalPanel(
     title = "Camera Vision",
