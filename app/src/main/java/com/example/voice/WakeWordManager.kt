@@ -376,8 +376,11 @@ class WakeWordManager(
     return try {
       gate()
     } catch (e: Exception) {
-      Log.w(TAG, "Trigger gate threw; failing open", e)
-      true
+      // FAIL CLOSED: the gate exists to stop a wake trigger from opening a duplicate
+      // session or firing while the command recognizer is listening. If it cannot
+      // report a decision, the safe answer is to drop the trigger, not to allow it.
+      Log.w(TAG, "Trigger gate threw; blocking wake trigger safely", e)
+      false
     }
   }
 
