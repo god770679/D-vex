@@ -19,6 +19,15 @@ import java.util.UUID
  * Explicitly prefers Google's TTS engine (com.google.android.tts) for high-quality
  * Tamil (ta-IN) and Indian English (en-IN) neural voices.
  * Includes graceful fallback to Tanglish if native Tamil TTS is missing or of poor quality.
+ *
+ * LONG REPLIES: the full text is spoken. Long answers are split into natural chunks
+ * ([TextToSpeechChunker]) and played back to back through the engine's own queue — the
+ * old behaviour of cutting everything after ~220 characters and speaking only the first
+ * part is gone. Display text is unaffected: the HUD always shows the full reply.
+ *
+ * INTERRUPTION (barge-in) is unchanged: every new reply, wake trigger or explicit stop
+ * calls [stop], which cancels the whole chunk queue at once. No audio focus is requested, no
+ * stream volume is touched, and no second audio source is introduced — one engine, one queue.
  */
 class TextToSpeechManager(private val context: Context) {
 
@@ -30,6 +39,21 @@ class TextToSpeechManager(private val context: Context) {
   val isSpeaking: StateFlow<Boolean> = _isSpeaking.asStateFlow()
 
   private var onSpeechDoneCallback: (() -> Unit)? = null
+
+  // Tracks the chunk utterances of the reply currently being spoken, so the completion
+  // callback fires exactly ONCE — after the LAST chunk (see SpeechChunkTracker).
+  private val chunkTracker = SpeechChunkTracker()
+
+  // Set by the engine's onInit callback. Kept even when the callback arrives before the
+  // engine instance could be assigned to [tts], which is what makes a synchronous onInit
+  // safe instead of leaving D-VEX permanently silent.
+  private var lastInitStatus: Int? = null
+
+  /** True when the engine reported that it could not be used at all. */
+  private var initFailed = false
+
+  /** True once voice/language/progress setup has been applied to the live engine. */
+  private var engineSetupApplied = false
 
   // Baseline prosody for the currently selected voice/language. Tone adaptation
   // adjusts these rather than replacing them, so the language-specific voice
@@ -49,17 +73,17 @@ class TextToSpeechManager(private val context: Context) {
     try {
       val isGoogleTtsInstalled = isGoogleTtsEngineInstalled()
       val initCallback = TextToSpeech.OnInitListener { status ->
+        lastInitStatus = status
         if (status == TextToSpeech.SUCCESS) {
-          tts?.let { engine ->
-            setupProgressListener(engine)
-            setupVoiceAndLanguage(engine, Locale.getDefault())
-            isInitialized = true
-            Log.i(TAG, "D-VEX TextToSpeech initialized successfully (engine: ${engine.defaultEngine})")
-          }
+          // Null when the engine dispatched onInit from inside its own constructor, i.e.
+          // before [tts] could be assigned; speak() applies the setup on first use then.
+          tts?.let { engine -> prepareEngine(engine) }
         } else {
           Log.w(TAG, "Primary TTS initialization failed with status $status; attempting default engine fallback")
           if (isGoogleTtsInstalled) {
             fallbackToDefaultTts()
+          } else {
+            initFailed = true
           }
         }
       }
@@ -80,20 +104,45 @@ class TextToSpeechManager(private val context: Context) {
   private fun fallbackToDefaultTts() {
     try {
       tts = TextToSpeech(context) { status ->
+        lastInitStatus = status
         if (status == TextToSpeech.SUCCESS) {
           tts?.let { engine ->
-            setupProgressListener(engine)
-            setupVoiceAndLanguage(engine, Locale.getDefault())
-            isInitialized = true
+            prepareEngine(engine)
             Log.i(TAG, "Fallback default TTS engine initialized")
           }
         } else {
+          initFailed = true
           Log.e(TAG, "Fallback TTS initialization failed: $status")
         }
       }
     } catch (e: Exception) {
+      initFailed = true
       Log.e(TAG, "Error in fallback TTS initialization", e)
     }
+  }
+
+  /**
+   * Applies voice/language/progress setup to the live engine exactly once.
+   *
+   * Normally the engine's onInit callback does this. Some engines dispatch onInit from
+   * inside their own constructor, before the instance can be assigned, and a callback that
+   * finds no instance used to leave D-VEX permanently silent. Re-applying the setup on
+   * first use is idempotent and fixes both orderings.
+   */
+  private fun prepareEngine(engine: TextToSpeech) {
+    if (engineSetupApplied) return
+    setupProgressListener(engine)
+    setupVoiceAndLanguage(engine, Locale.getDefault())
+    engineSetupApplied = true
+    isInitialized = true
+    Log.i(TAG, "D-VEX TextToSpeech initialized successfully (engine: ${engineName(engine)})")
+  }
+
+  /** Engine name for diagnostics; never fatal when an engine cannot report one. */
+  private fun engineName(engine: TextToSpeech): String = try {
+    engine.defaultEngine ?: "system default"
+  } catch (e: Exception) {
+    "unknown"
   }
 
   private fun isGoogleTtsEngineInstalled(): Boolean {
@@ -108,26 +157,34 @@ class TextToSpeechManager(private val context: Context) {
   private fun setupProgressListener(engine: TextToSpeech) {
     engine.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
       override fun onStart(utteranceId: String?) {
-        _isSpeaking.value = true
-        Log.d(TAG, "Utterance started: $utteranceId")
+        // Only the reply being tracked may claim the microphone is busy: a late onStart from
+        // an utterance that was flushed by a barge-in must not report D-VEX as speaking again.
+        if (chunkTracker.isTracked(utteranceId)) {
+          _isSpeaking.value = true
+          Log.d(TAG, "Chunk started: $utteranceId")
+        } else {
+          Log.d(TAG, "Stale utterance started after interruption; ignored: $utteranceId")
+        }
       }
 
       override fun onDone(utteranceId: String?) {
-        _isSpeaking.value = false
-        Log.i(TAG, "Speech completed")
-        mainHandler.post {
-          onSpeechDoneCallback?.invoke()
-          onSpeechDoneCallback = null
-        }
+        Log.i(TAG, "Speech chunk finished: $utteranceId")
+        // A long reply is spoken as several chunks: only the LAST one ends the turn.
+        if (chunkTracker.complete(utteranceId)) finishSpeechTurn()
+      }
+
+      override fun onStop(utteranceId: String?, interrupted: Boolean) {
+        Log.i(TAG, "Utterance stopped (interrupted=$interrupted): $utteranceId")
+        // A stopped chunk of the reply being spoken means the rest of it will not play
+        // either, so the turn ends now rather than waiting forever. `onStop` defaults to
+        // calling `onDone`, which would have reported a bogus completion per chunk.
+        if (chunkTracker.fail(utteranceId)) finishSpeechTurn()
       }
 
       override fun onError(utteranceId: String?) {
-        _isSpeaking.value = false
         Log.w(TAG, "Utterance playback error: $utteranceId")
-        mainHandler.post {
-          onSpeechDoneCallback?.invoke()
-          onSpeechDoneCallback = null
-        }
+        // A failed chunk cannot be recovered by waiting; end the turn honestly.
+        if (chunkTracker.fail(utteranceId)) finishSpeechTurn()
       }
     })
   }
@@ -330,10 +387,22 @@ class TextToSpeechManager(private val context: Context) {
     toneCode: String? = null,
     onDone: (() -> Unit)? = null
   ) {
-    if (!isInitialized || tts == null) {
+    val engine = tts
+    if (engine == null || initFailed) {
       Log.w(TAG, "TTS not ready; falling back immediately")
       onDone?.invoke()
       return
+    }
+    if (!isInitialized) {
+      if (lastInitStatus == null) {
+        // Initialization has not reported back yet: keep the existing behaviour and let
+        // the caller continue instead of speaking into a half-connected engine.
+        Log.w(TAG, "TTS still initializing; falling back immediately")
+        onDone?.invoke()
+        return
+      }
+      // Success already reported, but before the engine instance existed (see prepareEngine).
+      prepareEngine(engine)
     }
 
     // Stop any in-progress speech before speaking new response
@@ -342,37 +411,35 @@ class TextToSpeechManager(private val context: Context) {
     this.onSpeechDoneCallback = onDone
 
     try {
-      tts?.let { engine ->
-        val containsTamil = TamilTransliteration.containsTamilScript(text)
-        val isExplicitTamil = languageCode != null && when (languageCode.lowercase(Locale.ROOT)) {
-          "tamil", "ta", "ta-in" -> true
-          else -> false
-        }
-        val isExplicitTanglish = languageCode != null && when (languageCode.lowercase(Locale.ROOT)) {
-          "tanglish", "en-in" -> true
-          else -> false
-        }
-
-        val treatAsTamil = containsTamil || isExplicitTamil
-
-        // Tamil script -> Tamil voice. Explicit Tanglish (or mixed Tamil-English)
-        // -> Indian English voice, which pronounces romanized Tamil naturally.
-        // Everything else -> US English.
-        val locale = when {
-          treatAsTamil -> Locale.forLanguageTag("ta-IN")
-          isExplicitTanglish -> Locale.forLanguageTag("en-IN")
-          else -> Locale.US
-        }
-        setupVoiceAndLanguage(engine, locale, isTamil = treatAsTamil)
-        // Applied AFTER the language baseline so tone modifies the chosen voice
-        // instead of overriding its character.
-        applyTone(engine, toneCode)
-        speakUtterance(engine, sanitizeTextForSpeech(text))
+      val containsTamil = TamilTransliteration.containsTamilScript(text)
+      val isExplicitTamil = languageCode != null && when (languageCode.lowercase(Locale.ROOT)) {
+        "tamil", "ta", "ta-in" -> true
+        else -> false
       }
+      val isExplicitTanglish = languageCode != null && when (languageCode.lowercase(Locale.ROOT)) {
+        "tanglish", "en-in" -> true
+        else -> false
+      }
+
+      val treatAsTamil = containsTamil || isExplicitTamil
+
+      // Tamil script -> Tamil voice. Explicit Tanglish (or mixed Tamil-English)
+      // -> Indian English voice, which pronounces romanized Tamil naturally.
+      // Everything else -> US English.
+      val locale = when {
+        treatAsTamil -> Locale.forLanguageTag("ta-IN")
+        isExplicitTanglish -> Locale.forLanguageTag("en-IN")
+        else -> Locale.US
+      }
+      setupVoiceAndLanguage(engine, locale, isTamil = treatAsTamil)
+      // Applied AFTER the language baseline so tone modifies the chosen voice
+      // instead of overriding its character.
+      applyTone(engine, toneCode)
+      // The WHOLE text is spoken: it is split into natural chunks rather than truncated.
+      speakChunks(engine, TextToSpeechChunker.chunk(sanitizeTextForSpeech(text)))
     } catch (e: Exception) {
       Log.e(TAG, "Error speaking utterance", e)
-      _isSpeaking.value = false
-      onDone?.invoke()
+      finishSpeechTurn()
     }
   }
 
@@ -417,42 +484,73 @@ class TextToSpeechManager(private val context: Context) {
   private fun clamp(value: Float, min: Float, max: Float): Float =
     if (value < min) min else if (value > max) max else value
 
-  private fun speakUtterance(engine: TextToSpeech, textToSpeak: String) {
-    val utteranceId = UUID.randomUUID().toString()
+  /**
+   * Speaks the chunks of one reply sequentially and gaplessly.
+   *
+   * The FIRST chunk FLUSHES — a new reply always replaces whatever was still playing —
+   * and the rest are ADDED to the engine's own queue, so Android plays them back to back
+   * in order, with no overlap and no second audio stream. A barge-in is still one
+   * `tts.stop()`: it cancels the whole queue at once.
+   */
+  private fun speakChunks(engine: TextToSpeech, chunks: List<String>) {
+    if (chunks.isEmpty()) {
+      Log.i(TAG, "Nothing speakable in this reply")
+      finishSpeechTurn()
+      return
+    }
+
+    val utteranceIds = chunks.map { UUID.randomUUID().toString() }
+    chunkTracker.begin(utteranceIds)
     _isSpeaking.value = true
-    Log.i(TAG, "Speaking response: \"$textToSpeak\"")
-    engine.speak(textToSpeak, TextToSpeech.QUEUE_FLUSH, null, utteranceId)
+
+    chunks.forEachIndexed { index, chunk ->
+      val queueMode = if (index == 0) TextToSpeech.QUEUE_FLUSH else TextToSpeech.QUEUE_ADD
+      Log.i(
+        TAG,
+        "Speaking chunk ${index + 1}/${chunks.size} (${chunk.length} chars, " +
+          "queue=${if (index == 0) "FLUSH" else "ADD"}): \"$chunk\""
+      )
+      engine.speak(chunk, queueMode, null, utteranceIds[index])
+    }
   }
 
   /**
-   * Sanitizes markdown, punctuation noise, and prevents run-on monologues
-   * while preserving pauses (periods, commas) for calm, natural cadence.
+   * Ends one spoken reply: at most one callback, on the main thread, for the reply that is
+   * actually finishing. The tracker is cleared first, so a late `onDone`/`onStop` from an
+   * abandoned utterance cannot end the NEXT reply early.
    */
-  private fun sanitizeTextForSpeech(input: String): String {
-    var cleaned = input
-      .replace(Regex("[*#_`~\\[\\]()<>{}=|]"), " ")
-      .replace(Regex("\\s+"), " ")
-      .trim()
-
-    // Ensure space after punctuation for natural breath pauses
-    cleaned = cleaned
-      .replace(",", ", ")
-      .replace(".", ". ")
-      .replace("?", "? ")
-      .replace(Regex("\\s+"), " ")
-      .trim()
-
-    // If text exceeds 220 chars, cut off cleanly at the nearest sentence boundary
-    if (cleaned.length > 220) {
-      val periodIndex = cleaned.indexOf('.', 120)
-      if (periodIndex != -1 && periodIndex <= 240) {
-        cleaned = cleaned.substring(0, periodIndex + 1)
-      } else {
-        cleaned = cleaned.take(210) + "..."
-      }
+  private fun finishSpeechTurn() {
+    chunkTracker.clear()
+    _isSpeaking.value = false
+    mainHandler.post {
+      onSpeechDoneCallback?.invoke()
+      onSpeechDoneCallback = null
     }
-    return cleaned
   }
+
+  /**
+   * Sanitizes markdown and speech-hostile punctuation while PRESERVING the structure the
+   * chunker needs: paragraph breaks survive as blank lines, sentences and commas keep
+   * their pause points.
+   *
+   * It never truncates and never drops words. The old 220-character cut — which silently
+   * discarded the rest of every long answer — is gone: the full text is always spoken, in
+   * chunks chosen by [TextToSpeechChunker].
+   */
+  private fun sanitizeTextForSpeech(input: String): String = input
+    .replace("\r\n", "\n")
+    .split(PARAGRAPH_BREAK)
+    .map { paragraph -> sanitizeParagraph(paragraph) }
+    .filter { it.isNotEmpty() }
+    .joinToString("\n\n")
+
+  private fun sanitizeParagraph(paragraph: String): String = paragraph
+    .replace(MARKDOWN_NOISE, " ")
+    // Natural breath pause after punctuation (a space that is already there is collapsed
+    // by the run below, so nothing becomes double-spaced).
+    .replace(PUNCTUATION_WITHOUT_SPACE, "$1 ")
+    .replace(WHITESPACE_RUN, " ")
+    .trim()
 
   fun stop() {
     try {
@@ -460,6 +558,10 @@ class TextToSpeechManager(private val context: Context) {
     } catch (e: Exception) {
       Log.e(TAG, "Error stopping TTS", e)
     }
+    // Interruption ends the turn: the cancelled utterance will never report completion for
+    // the reply it belonged to, and a late callback is not replayed into the next one.
+    chunkTracker.clear()
+    onSpeechDoneCallback = null
     _isSpeaking.value = false
   }
 
@@ -469,6 +571,9 @@ class TextToSpeechManager(private val context: Context) {
       tts?.shutdown()
       tts = null
       isInitialized = false
+      engineSetupApplied = false
+      chunkTracker.clear()
+      onSpeechDoneCallback = null
     } catch (e: Exception) {
       Log.e(TAG, "Error destroying TTS", e)
     }
@@ -477,6 +582,17 @@ class TextToSpeechManager(private val context: Context) {
   companion object {
     private const val TAG = "[D-VEX][TTS]"
     private const val GOOGLE_TTS_PACKAGE = "com.google.android.tts"
+
+    /** Paragraph break: a blank line is a real pause, and the chunker splits on it first. */
+    private val PARAGRAPH_BREAK = Regex("\\n\\s*\\n")
+
+    /** Markdown characters that are read literally by TTS engines. */
+    private val MARKDOWN_NOISE = Regex("[*#_`~\\[\\]()<>{}=|]")
+
+    /** Characters the previous sanitizer spaced out; behaviour preserved exactly. */
+    private val PUNCTUATION_WITHOUT_SPACE = Regex("([,.?])(?=\\S)")
+
+    private val WHITESPACE_RUN = Regex("\\s+")
 
     // Bounded so tone adaptation can never produce an unnatural or unintelligible voice.
     private const val RATE_MIN = 0.80f

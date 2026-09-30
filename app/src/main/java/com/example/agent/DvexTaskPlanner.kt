@@ -203,11 +203,19 @@ class DvexTaskPlanner(private val taskContext: DvexTaskContext) {
     appName.contains("camera", ignoreCase = true)
 
   private fun summaryOf(steps: List<AgentAction>): String = when {
-    steps.size == 1 -> describe(steps.first())
-    else -> steps.joinToString(", ") { describe(it) }
+    steps.size == 1 -> describeAction(steps.first())
+    else -> steps.joinToString(", ") { describeAction(it) }
   }
+}
 
-  private fun describe(action: AgentAction): String = when (action.type) {
+/**
+ * Short, speakable description of one action ("open YouTube", "message Arun").
+ *
+ * Shared by the planner (plan summaries) and [DvexToolProtocol] (a tool call admitted
+ * from the model), so one action is described the same way no matter how it was
+ * triggered — including inside the "Shall I …?" confirmation prompt.
+ */
+internal fun describeAction(action: AgentAction): String = when (action.type) {
     AgentActionType.OPEN_APP -> "open ${action.target}"
     AgentActionType.OPEN_CAMERA -> "open the camera"
     AgentActionType.SEARCH_IN_APP -> "search \"${action.query}\" in ${action.target}"
@@ -239,4 +247,3 @@ class DvexTaskPlanner(private val taskContext: DvexTaskContext) {
     AgentActionType.VOLUME_UP -> "turn the volume up"
     AgentActionType.VOLUME_DOWN -> "turn the volume down"
   }
-}

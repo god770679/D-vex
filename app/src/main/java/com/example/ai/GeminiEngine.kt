@@ -1,6 +1,8 @@
 package com.example.ai
 
 import android.util.Log
+import com.example.agent.DvexMcpTool
+import com.example.agent.DvexToolCall
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
@@ -80,14 +82,39 @@ class GeminiEngine(
     .callTimeout(DEFAULT_CALL_TIMEOUT_SECONDS, TimeUnit.SECONDS)
     .build()
 
-  override suspend fun generate(prompt: String): String? = withContext(Dispatchers.IO) {
+  /**
+   * Text-only turn: the model's reply, or null when it could not be produced.
+   * Unchanged behaviour — no tool declarations are sent, so the request body is
+   * byte-for-byte what it has always been.
+   */
+  override suspend fun generate(prompt: String): String? = generateWithTools(prompt, emptyList()).text
+
+  /**
+   * THE MODEL-FACING HALF OF THE D-VEX TOOL BOUNDARY.
+   *
+   * Same single `generateContent` request, plus D-VEX's tool declarations when [tools]
+   * is non-empty, so the model may *select* one of them. Selection is not permission:
+   * the returned [AiModelTurn.toolCalls] are plain requests that must go through
+   * `agent/DvexToolProtocol` for validation, permission, confirmation, execution and
+   * verification. This method never runs a tool.
+   *
+   * A turn that carries a tool call and no text is a SUCCESS (the model asked instead
+   * of talking), and it is never retried as an empty reply.
+   *
+   * LIVE STATUS: the declaration dialect itself was accepted by the live endpoint on
+   * 2026-09-29, but a real `functionCall` has NOT been observed yet (the free-tier
+   * daily quota for `gemini-3.8-flash` is exhausted). The conversation pipeline does
+   * not call this yet, so nothing about the spoken experience depends on it.
+   */
+  override suspend fun generateWithTools(prompt: String, tools: List<DvexMcpTool>): AiModelTurn =
+    withContext(Dispatchers.IO) {
     val apiKey = apiKeyProvider()
     if (apiKey.isNullOrBlank()) {
       // Single decisive diagnostic: proves at runtime whether the key actually
       // reached the APK. The key VALUE is never logged.
       Log.w(TAG, "[D-VEX][AI] configured=false — GEMINI_API_KEY missing/blank in this build; " +
         "every conversation will use the deterministic fallback. Rebuild with the key set.")
-      return@withContext null
+      return@withContext AiModelTurn(text = null)
     }
 
     Log.i(TAG, "[D-VEX][AI] configured=true model=$model " +
@@ -109,13 +136,20 @@ class GeminiEngine(
         // so deep reasoning buys nothing here.
         put("thinkingConfig", JSONObject().put("thinkingLevel", THINKING_LEVEL))
       })
+      if (tools.isNotEmpty()) {
+        // Gemini REST shape: tools[] of Tool objects, each holding functionDeclarations.
+        // Encoding stays in GeminiToolAdapter/GeminiToolCodec — this engine never
+        // hand-rolls a declaration.
+        put("tools", JSONArray().put(GeminiToolAdapter.declarations(tools)))
+      }
     }
 
     val url = "$baseUrl/v1beta/models/$model:generateContent"
     Log.i(TAG, "[D-VEX][AI] request started POST $url " +
       "(prompt=${prompt.length} chars, connect=${client.connectTimeoutMillis}ms, " +
       "read=${client.readTimeoutMillis}ms, call=${client.callTimeoutMillis}ms, " +
-      "thinkingLevel=$THINKING_LEVEL, maxOutputTokens=$MAX_OUTPUT_TOKENS, maxAttempts=$maxAttempts)")
+      "thinkingLevel=$THINKING_LEVEL, maxOutputTokens=$MAX_OUTPUT_TOKENS, maxAttempts=$maxAttempts, " +
+      "tools=${tools.size}, dialect=${if (tools.isEmpty()) "none" else GeminiToolAdapter.DIALECT})")
 
     val request = Request.Builder()
       .url(url)
@@ -130,10 +164,13 @@ class GeminiEngine(
     // engine always finishes before the response layer's outer timeout.
     val deadlineMs = System.currentTimeMillis() + RETRY_TOTAL_BUDGET_MS
     var answer: String? = null
+    var selected: List<DvexToolCall> = emptyList()
     for (attempt in 1..maxAttempts) {
       val outcome = executeOnce(request, apiKey)
-      if (outcome.text != null) {
+      // Either half of a turn counts as an answer: text, a selected tool call, or both.
+      if (outcome.text != null || outcome.toolCalls.isNotEmpty()) {
         answer = outcome.text
+        selected = outcome.toolCalls
         break
       }
       // Permanent (400/401/403/404, or a 2xx with no answer text): another
@@ -152,7 +189,7 @@ class GeminiEngine(
         "(attempt $attempt of $maxAttempts, model=$model)")
       delay(backoffMs)
     }
-    answer
+    AiModelTurn(text = answer, toolCalls = selected)
   }
 
   /**
@@ -200,14 +237,25 @@ class GeminiEngine(
           "textParts=${parsed.textParts} finishReason=${parsed.finishReason ?: "none"} " +
           "blockReason=${parsed.blockReason ?: "none"} " +
           "thoughtsTokenCount=${parsed.thoughtsTokenCount}")
-        if (parsed.text.isNullOrBlank()) {
+        // Parsed through the codec, so the response dialect lives in ONE place. A
+        // text-only answer yields an empty list and the turn stays exactly as before.
+        val toolCalls = GeminiToolAdapter.decodeCalls(raw)
+        if (parsed.text.isNullOrBlank() && toolCalls.isEmpty()) {
           Log.w(TAG, "[D-VEX][AI] empty — response had no candidate text " +
             "(model=$model, finishReason=${parsed.finishReason ?: "none"}, " +
             "blockReason=${parsed.blockReason ?: "none"}); thoughts/signatures are not answer text")
+        } else if (toolCalls.isNotEmpty()) {
+          Log.i(TAG, "[D-VEX][AI] model selected ${toolCalls.size} tool call(s): " +
+            "${toolCalls.joinToString(", ") { it.toolName }} (selection only — D-VEX decides)")
         } else {
-          Log.i(TAG, "[D-VEX][AI] success — generated ${parsed.text.length} chars")
+          Log.i(TAG, "[D-VEX][AI] success — generated ${parsed.text?.length ?: 0} chars")
         }
-        AttemptOutcome(parsed.text, retryable = false, reason = "no answer text")
+        AttemptOutcome(
+          text = parsed.text,
+          retryable = false,
+          reason = if (toolCalls.isEmpty()) "no answer text" else "tool call selected",
+          toolCalls = toolCalls
+        )
       }
     } catch (e: Exception) {
       // Timeouts (SocketTimeoutException) and IO failures both land here.
@@ -220,11 +268,15 @@ class GeminiEngine(
     }
   }
 
-  /** One attempt's result: the answer text, and whether retrying could help. */
+  /**
+   * One attempt's result: the answer text, any tool call the model selected, and whether
+   * retrying could help.
+   */
   private class AttemptOutcome(
     val text: String?,
     val retryable: Boolean,
-    val reason: String
+    val reason: String,
+    val toolCalls: List<DvexToolCall> = emptyList()
   )
 
   /** Diagnostics for one parsed reply. Never carries the key. */

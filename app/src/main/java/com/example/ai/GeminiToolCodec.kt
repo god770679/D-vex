@@ -167,6 +167,24 @@ object GeminiToolCodec {
     emptyList()
   }
 
+  /**
+   * Every argument of [call] as plain strings, in the model's own key order.
+   *
+   * Numbers and booleans are stringified so one value shape reaches the model-independent
+   * layer; deciding whether the value is valid for the tool's declared field type belongs
+   * to `DvexToolProtocol`, not to this codec.
+   */
+  fun argumentsMap(call: GeminiFunctionCall): Map<String, String> {
+    val out = LinkedHashMap<String, String>()
+    val keys = call.arguments.keys()
+    while (keys.hasNext()) {
+      val key = keys.next()
+      val value = call.arguments.opt(key) ?: continue
+      if (value is String) out[key] = value else out[key] = value.toString()
+    }
+    return out
+  }
+
   /** Reads a string argument, or null when the model omitted/mistyped it. */
   fun stringArgument(call: GeminiFunctionCall, key: String): String? =
     call.arguments.optString(key, "").trim().takeIf { it.isNotEmpty() }

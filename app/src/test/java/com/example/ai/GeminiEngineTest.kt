@@ -1,5 +1,6 @@
 package com.example.ai
 
+import com.example.agent.DvexMcpRegistry
 import com.sun.net.httpserver.HttpServer
 import java.net.InetSocketAddress
 import java.util.concurrent.atomic.AtomicInteger
@@ -412,5 +413,84 @@ class GeminiEngineTest {
       "MAX_TOKENS must be visible, not a mystery: ${loggedLines()}",
       loggedLines().any { it.contains("finishReason=MAX_TOKENS") }
     )
+  }
+
+  // The tool boundary, on the model side of it ---------------------------------
+  //
+  // These pin that the transport can carry D-VEX tool declarations and hand back the
+  // model's SELECTION. They are not evidence that live function calling works: a real
+  // `functionCall` from `gemini-3.8-flash` is still pending (free-tier quota exhausted).
+
+  private fun functionCallOnlyResponse(name: String, argsJson: String): String = """
+    {
+      "candidates": [
+        {
+          "content": {
+            "parts": [
+              { "functionCall": { "name": "$name", "args": $argsJson } }
+            ],
+            "role": "model"
+          },
+          "finishReason": "STOP"
+        }
+      ],
+      "modelVersion": "gemini-3.8-flash"
+    }
+  """.trimIndent()
+
+  @Test
+  fun toolDeclarationsAreSentOnlyWhenTheModelIsAskedToSelectTools() = runBlocking {
+    responseBody = gemini3Response("Ready.")
+    val tools = DvexMcpRegistry.withDefaults().tools().filter { it.name == "open_app" || it.name == "send_message" }
+
+    engine().generateWithTools("Open YouTube for me.", tools)
+
+    val declarations = JSONObject(lastBody!!)
+      .getJSONArray("tools")
+      .getJSONObject(0)
+      .getJSONArray("functionDeclarations")
+    val declaredNames = (0 until declarations.length()).map { declarations.getJSONObject(it).getString("name") }.toSet()
+    assertEquals(setOf("open_app", "send_message"), declaredNames)
+    assertTrue("tools must be visible in the log: ${loggedLines()}", loggedLines().any { it.contains("tools=2") })
+
+    responseBody = gemini3Response("Hello there.")
+    engine().generate("hello")
+    assertFalse(
+      "the plain conversation request must stay tool-free",
+      JSONObject(lastBody!!).has("tools")
+    )
+  }
+
+  @Test
+  fun aSelectedToolCallIsReturnedAsATurnNotTreatedAsAnEmptyReply() = runBlocking {
+    responseBody = functionCallOnlyResponse("open_app", "{\"app_name\":\"YouTube\"}")
+
+    val turn = engine().generateWithTools("Open YouTube for me.", DvexMcpRegistry.withDefaults().tools())
+
+    assertNull("a tool-call-only turn carries no spoken text", turn.text)
+    assertTrue(turn.hasToolCall)
+    assertEquals("open_app", turn.toolCalls.single().toolName)
+    assertEquals("YouTube", turn.toolCalls.single().arguments["app_name"])
+    assertEquals(
+      "a selected tool is a complete answer, so it must not be retried",
+      1,
+      requestCount.get()
+    )
+    assertTrue(
+      "the selection must be logged by name: ${loggedLines()}",
+      loggedLines().any { it.contains("tool call") && it.contains("open_app") }
+    )
+  }
+
+  @Test
+  fun aTextTurnAfterAToolTurnStillReturnsText() = runBlocking {
+    responseBody = functionCallOnlyResponse("open_app", "{\"app_name\":\"YouTube\"}")
+    engine().generateWithTools("Open YouTube for me.", DvexMcpRegistry.withDefaults().tools())
+
+    responseBody = gemini3Response("Opening YouTube for you.")
+    val turn = engine().generateWithTools("Open YouTube for me.", DvexMcpRegistry.withDefaults().tools())
+
+    assertEquals("Opening YouTube for you.", turn.text)
+    assertFalse(turn.hasToolCall)
   }
 }
