@@ -2,6 +2,7 @@ package com.example.brain
 
 import android.util.Log
 import com.example.ai.AiEngine
+import com.example.ai.AiQuotaState
 import java.util.Locale
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.withTimeout
@@ -28,7 +29,14 @@ import kotlinx.coroutines.withTimeout
  * 5. NO TOOL-LOGIC CHANGES: intent decides WHAT happens; the LLM decides HOW it's said.
  */
 class DvexResponseGenerator(
-  private val aiEngine: AiEngine? = null
+  private val aiEngine: AiEngine? = null,
+  /**
+   * FREE-FIRST gate shared with the engine. Closed means the cloud model cannot be
+   * used for this turn, so the reply comes from [localResponder] instead of the
+   * generic fallback line.
+   */
+  private val quotaState: AiQuotaState = AiQuotaState(),
+  private val localResponder: DvexLocalResponder = DvexLocalResponder()
 ) {
 
   /**
@@ -216,6 +224,32 @@ class DvexResponseGenerator(
       Log.w(TAG, "[D-VEX][AI] LLM returned null/blank; using EMERGENCY fallback (not AI-generated)")
     } else {
       Log.w(TAG, "[D-VEX][AI] no LLM engine available; using EMERGENCY fallback (not AI-generated)")
+    }
+
+    // FREE-FIRST: when the CLOUD AI is what failed, D-VEX still talks — using its
+    // own local voice instead of one blanket apology.
+    //
+    // Scope is deliberately narrow. A command that already executed locally carries
+    // its own verified spoken text (handled by [fallbackResponse] below and never
+    // routed here), so this branch only ever speaks for turns with nothing to
+    // report: conversation and general questions. [DvexLocalResponder] never invents
+    // an answer — where the cloud model was genuinely required, it says so.
+    if (!quotaState.isCloudUsable()) {
+      // ONLY turns with nothing to report. An action that already executed locally
+      // carries its own verified spoken text, and that text — not chit-chat — is
+      // what D-VEX must say; replacing it here would hide a real result behind the
+      // outage. So this branch is reachable only for conversation / general
+      // questions, exactly the turns that have no local answer to fall back on.
+      val hasNothingToReport = toolResult.toolName == "conversation" || toolResult.toolName == "general_qa"
+      if (hasNothingToReport) {
+        val local = localResponder.reply(userInput, language)
+        Log.w(TAG, "[D-VEX][AI] cloud unavailable (state=${quotaState.current}, " +
+          "retryIn=${quotaState.remainingCooldownMs()}ms, reason=${quotaState.reason()}); " +
+          "answering locally (not cloud-generated): \"$local\"")
+        return sanitizeFinalReply(local, language)
+      }
+      Log.i(TAG, "[D-VEX][AI] cloud unavailable, but tool=${toolResult.toolName} already " +
+        "produced a local result; reporting that result, not the outage")
     }
 
     // 4. EMERGENCY fallback — reached ONLY when the LLM engine is missing (no API

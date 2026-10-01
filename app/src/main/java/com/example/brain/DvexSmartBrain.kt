@@ -12,6 +12,7 @@ import com.example.agent.DvexCapabilityManager
 import com.example.agent.DvexCapabilityProbe
 import com.example.agent.DvexToolProtocol
 import com.example.ai.AiEngine
+import com.example.ai.AiQuotaState
 import com.example.ai.GeminiEngine
 import com.example.control.AppLauncherRepository
 import com.example.control.ContactResolver
@@ -45,19 +46,12 @@ class DvexSmartBrain(
   private val appLauncher: AppLauncherRepository,
   private val deviceControl: DeviceControlRepository,
   /**
-   * LLM used to phrase natural responses. Defaults to the Gemini engine reading
-   * BuildConfig.GEMINI_API_KEY (populated from the project .env); pass a fake in
-   * tests or null to force deterministic fallback replies.
+   * LLM used to phrase natural responses. `null` means "build the real engine",
+   * which is the Gemini engine reading BuildConfig.GEMINI_API_KEY (populated from
+   * the project .env) and writing its quota state into [quotaState]. Tests pass a
+   * fake to drive the phrasing and the free-first fallback deterministically.
    */
-  private val aiEngine: AiEngine? = GeminiEngine(
-    apiKeyProvider = {
-      try {
-        com.example.BuildConfig.GEMINI_API_KEY.takeIf { it.isNotBlank() }
-      } catch (e: Exception) {
-        null
-      }
-    }
-  ),
+  aiEngine: AiEngine? = null,
   /**
    * Capability authority for the agent engine. Defaults to the real device probe;
    * tests supply a stub so HIGH-risk confirmation behaviour can be exercised on a
@@ -70,6 +64,36 @@ class DvexSmartBrain(
   private val intentDetector = IntentDetector()
   private val conversationContext = ConversationContext()
   private val toolRouter = DvexToolRouter(context, appLauncher, deviceControl)
+
+  /**
+   * FREE-FIRST GATE — ONE instance shared by the engine and the response layer.
+   *
+   * The engine writes into it (quota spent, upstream down) and the response layer
+   * reads it (may I speak, or do I answer locally). Sharing one object is what makes
+   * "Gemini failed" mean the same thing on both sides of the same turn, and what
+   * stops a spent daily quota from costing one failed HTTP request per user message.
+   */
+  private val quotaState = AiQuotaState()
+
+  /**
+   * The engine this brain actually uses. Built here rather than in the constructor
+   * default because the Gemini engine and the response layer must share ONE
+   * [AiQuotaState]: the engine writes "the quota is spent / upstream is down" into
+   * it, and the response layer reads the same object to decide between the cloud
+   * voice and the local one. Two separate states would let one side think Gemini is
+   * available while the other has already given up on it.
+   */
+  private val effectiveAiEngine: AiEngine? =
+    aiEngine ?: GeminiEngine(
+      apiKeyProvider = {
+        try {
+          com.example.BuildConfig.GEMINI_API_KEY.takeIf { it.isNotBlank() }
+        } catch (e: Exception) {
+          null
+        }
+      },
+      quotaState = quotaState
+    )
   /**
    * Agent layer: action-oriented planning + capability-checked execution. It owns
    * device/app/multi-step intents and delegates each action to the EXISTING
@@ -78,7 +102,7 @@ class DvexSmartBrain(
    */
   private val agentEngine =
     DvexAgentEngine(context, appLauncher, deviceControl, toolRouter, capabilityManager = capabilityProbe)
-  private val responseGenerator = DvexResponseGenerator(aiEngine)
+  private val responseGenerator = DvexResponseGenerator(effectiveAiEngine, quotaState)
   private val contactResolver = ContactResolver(context)
 
   /**
@@ -471,7 +495,7 @@ class DvexSmartBrain(
    * not select any tool (plain text answer → the caller keeps the existing flow).
    */
   private suspend fun runModelToolTurn(prompt: String): DvexToolResult? {
-    val engine = aiEngine ?: return null
+    val engine = effectiveAiEngine ?: return null
     if (mcpRegistry.size == 0) return null
 
     val turn = engine.generateWithTools(prompt, mcpRegistry.tools())

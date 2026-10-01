@@ -378,16 +378,128 @@ class GeminiEngineTest {
       "giving up must name its cause: ${loggedLines()}",
       loggedLines().any { it.contains("giving up after") }
     )
-  }
-
-  @Test
+  }@Test
   fun aPermanentFailureIsNeverRetried() = runBlocking {
     responseCode = 404
     responseBody = """{"error":{"code":404,"message":"model is no longer available"}}"""
+    assertNull(engine().generate("hello"))
+    assertEquals("another identical request cannot fix a retired model", 1, requestCount.get())
+  }
+
+  // THE REAL ON-DEVICE FAULT: HTTP 429 for an EXHAUSTED free-tier quota.
+  //
+  // The live API answers 429 both for a brief rate-limit window and for a spent
+  // daily plan quota ("Quota exceeded for metric:
+  // ...generate_content_free_tier_requests, limit: 20"). Only the first can
+  // recover inside the retry budget. Retrying the second spent two more requests
+  // and ~2.7s of the user's time to arrive at the exact same fallback line, and
+  // the logs said only "HTTP 429" — indistinguishable from a rate limit.
+
+  private val quotaExhaustedBody = """
+    {"error":{"code":429,"status":"RESOURCE_EXHAUSTED",
+    "message":"You exceeded your current quota, please check your plan and billing details.
+    * Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 20, model: gemini-3.8-flash",
+    "details":[{"@type":"type.googleapis.com/google.rpc.QuotaFailure"},
+               {"@type":"type.googleapis.com/google.rpc.RetryInfo","retryDelay":"3.777996s"}]}}
+  """.trimIndent()
+
+  @Test
+  fun anExhaustedQuotaIsNotRetriedBecauseTheDailyCapCannotRecover() = runBlocking {
+    responseCode = 429
+    responseBody = quotaExhaustedBody
+
+    assertNull(engine().generate("Hi D-VEX"))
+
+    assertEquals(
+      "a spent daily quota cannot recover inside the retry budget, so the turn must not re-send it",
+      1,
+      requestCount.get()
+    )
+    val logs = loggedLines()
+    assertTrue("the category must be unmistakable: $logs", logs.any { it.contains("category=QUOTA_EXHAUSTED") })
+    assertTrue("and it must be reported as non-retryable: $logs", logs.any { it.contains("retryable=false") })
+  }
+
+  @Test
+  fun anExhaustedQuotaKeepsNamingTheQuotaMetricInTheLog() = runBlocking {
+    responseCode = 429
+    responseBody = quotaExhaustedBody
+
+    engine().generate("Hi D-VEX")
+
+    val logs = loggedLines()
+    assertTrue("metric named: $logs", logs.any { it.contains("generate_content_free_tier_requests") })
+  }
+
+  @Test
+  fun aShortRateLimitWindowIsStillRetriedAndTheRealReplyIsDelivered() = runBlocking {
+    // Same 429 status, but NO quota wording: a transient window, so retrying is
+    // correct and the real answer must still reach the user.
+    transientFailures[1] = 429
+    responseBody = gemini3Response("Hello! How can I help you today?")
+
+    val reply = engine().generate("Hi D-VEX")
+
+    assertEquals("Hello! How can I help you today?", reply)
+    assertEquals(2, requestCount.get())
+    assertTrue(
+      "the retry must name the class, not just the status: ${loggedLines()}",
+      loggedLines().any { it.contains("category=RATE_LIMIT") }
+    )
+  }
+
+  @Test
+  fun aRetryDelayLongerThanTheBudgetIsRespectedInsteadOfRetriedEarly() = runBlocking {
+    // A rate limit that says "come back in 60s" cannot be satisfied by an 18s
+    // retry budget, and retrying before the API's own stated delay is exactly
+    // what turns a rate limit into a self-inflicted failure.
+    responseCode = 429
+    responseBody = """
+      {"error":{"code":429,"status":"RESOURCE_EXHAUSTED","message":"Resource has been exhausted (e.g. per-minute)",
+      "details":[{"@type":"type.googleapis.com/google.rpc.RetryInfo","retryDelay":"60s"}]}}
+    """.trimIndent()
 
     assertNull(engine().generate("hello"))
 
-    assertEquals("another identical request cannot fix a retired model", 1, requestCount.get())
+    assertEquals("must not re-send before the API's own retry delay", 1, requestCount.get())
+    assertTrue(
+      "must be classified as a retryable rate limit: ${loggedLines()}",
+      loggedLines().any { it.contains("category=RATE_LIMIT") }
+    )
+  }
+
+  // Every failure class reports its own stable category ------------------------
+
+  @Test
+  fun eachHttpFailureClassReportsItsOwnCategory() = runBlocking {
+    val cases = listOf(
+      Triple(400, """{"error":{"code":400,"message":"Invalid JSON payload"}}""", "BAD_REQUEST"),
+      Triple(401, """{"error":{"code":401,"message":"API key not valid"}}""", "AUTH"),
+      Triple(403, """{"error":{"code":403,"message":"Permission denied"}}""", "AUTH"),
+      Triple(404, """{"error":{"code":404,"message":"model not found"}}""", "MODEL_NOT_FOUND"),
+      Triple(503, """{"error":{"code":503,"status":"UNAVAILABLE","message":"high demand"}}""", "UPSTREAM")
+    )
+    for ((code, body, expected) in cases) {
+      ShadowLog.clear()
+      responseCode = code
+      responseBody = body
+      assertNull("HTTP $code must yield no reply", engine().generate("hello"))
+      val logs = loggedLines()
+      assertTrue("HTTP $code must log category=$expected: $logs", logs.any { it.contains("category=$expected") })
+      assertTrue("HTTP $code must log its status: $logs", logs.any { it.contains("HTTP $code") })
+    }
+  }
+
+  @Test
+  fun aBlankReplyIsReportedAsAnEmptyResponseNotAsAnHttpFault() = runBlocking {
+    responseCode = 200
+    responseBody = """{"candidates":[{"content":{"parts":[{"thoughtSignature":"only-thoughts=="}],"role":"model"},"finishReason":"MAX_TOKENS"}]}"""
+
+    assertNull(engine().generate("hello"))
+
+    val logs = loggedLines()
+    assertTrue("empty category: $logs", logs.any { it.contains("category=EMPTY_RESPONSE") })
+    assertFalse("a 200 is not an HTTP failure: $logs", logs.any { it.contains("exception=HTTP") })
   }
 
   @Test

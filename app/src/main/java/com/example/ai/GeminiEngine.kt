@@ -50,18 +50,27 @@ import java.util.concurrent.TimeUnit
  *   came back 503 while the identical body succeeded moments later. Without a
  *   retry, one transient 503 became the user-visible "I can't reach my AI
  *   connection" fallback even though nothing was wrong with the request.
- * - Never retries permanent failures: missing key, HTTP 400/401/403/404, or a 2xx
- *   answer that carried no text.
+ * - Never retries permanent failures: missing key, HTTP 400/401/403/404, a 2xx
+ *   answer that carried no text, or a 429 caused by an EXHAUSTED plan quota.
+ * - A 429 is not automatically transient. The free tier answers 429 both for a
+ *   brief per-minute window and for a spent daily cap
+ *   (`generate_content_free_tier_requests ... limit: 20`). Only the first can
+ *   recover inside the retry budget, so the error body decides, and when the API
+ *   supplies a `RetryInfo` delay that delay is what the engine waits for.
  * - Returns null when every attempt failed: missing key, HTTP error, timeout,
  *   empty body, blank reply. The response layer owns the user-facing fallback
  *   string.
  * - Never fabricates data: prompting happens in DvexResponseGenerator, which
  *   passes only real tool results and forbids inventing numbers or facts.
  *
- * DIAGNOSTICS: every failure mode logs one line that names its own cause
- * (configured=false / HTTP status + API message / timeout / parse). The API key
- * VALUE is never logged; HTTP error bodies and exception text are redacted
- * before logging.
+ * DIAGNOSTICS: every failure mode logs one line carrying a stable `category=`
+ * token (QUOTA_EXHAUSTED, RATE_LIMIT, BAD_REQUEST, AUTH, MODEL_NOT_FOUND,
+ * UPSTREAM, HTTP_OTHER, TIMEOUT, NETWORK, TLS, EMPTY_RESPONSE, PARSE) beside the
+ * HTTP status, model and the API's own message. A single user-visible fallback
+ * line was covering genuinely different faults, and "the daily quota is gone" and
+ * "the phone cannot reach the internet" need opposite fixes — so the log has to
+ * say which one happened. The API key VALUE is never logged; HTTP error bodies
+ * and exception text are redacted before logging.
  */
 class GeminiEngine(
   private val apiKeyProvider: () -> String?,
@@ -69,7 +78,14 @@ class GeminiEngine(
   readTimeoutSeconds: Long = DEFAULT_READ_TIMEOUT_SECONDS,
   private val model: String = DEFAULT_MODEL,
   private val baseUrl: String = DEFAULT_BASE_URL,
-  private val maxAttempts: Int = DEFAULT_MAX_ATTEMPTS
+  private val maxAttempts: Int = DEFAULT_MAX_ATTEMPTS,
+  /**
+   * Shared FREE-FIRST gate. When it is closed this engine makes NO request at all
+   * and returns null immediately, so a spent daily quota costs one failed request
+   * per cooldown instead of one per user message. The response layer reads the same
+   * instance to decide whether to answer locally.
+   */
+  private val quotaState: AiQuotaState = AiQuotaState()
 ) : AiEngine {
 
   private val client: OkHttpClient = OkHttpClient.Builder()
@@ -108,6 +124,15 @@ class GeminiEngine(
    */
   override suspend fun generateWithTools(prompt: String, tools: List<DvexMcpTool>): AiModelTurn =
     withContext(Dispatchers.IO) {
+    // FREE-FIRST GATE. Checked BEFORE the key so the reason is the real one:
+    // a closed quota gate is not a missing key and must not be reported as one.
+    if (!quotaState.isCloudUsable()) {
+      Log.w(TAG, "[D-VEX][AI] request SKIPPED — cloud AI gated (state=${quotaState.current}, " +
+        "retryIn=${quotaState.remainingCooldownMs()}ms, reason=${quotaState.reason()}); " +
+        "no HTTP call made, response layer will use the local brain")
+      return@withContext AiModelTurn(text = null)
+    }
+
     val apiKey = apiKeyProvider()
     if (apiKey.isNullOrBlank()) {
       // Single decisive diagnostic: proves at runtime whether the key actually
@@ -171,25 +196,60 @@ class GeminiEngine(
       if (outcome.text != null || outcome.toolCalls.isNotEmpty()) {
         answer = outcome.text
         selected = outcome.toolCalls
+        quotaState.onCloudSuccess()
         break
       }
-      // Permanent (400/401/403/404, or a 2xx with no answer text): another
-      // identical request cannot help, so do not spend the user's latency on it.
-      if (!outcome.retryable) break
+      // Permanent (400/401/403/404, a 2xx with no answer text, or an exhausted
+      // quota): another identical request cannot help, so do not spend the user's
+      // latency on it.
+      if (!outcome.retryable) {
+        recordFailure(outcome)
+        break
+      }
 
-      val backoffMs = RETRY_BACKOFF_MS.getOrElse(attempt - 1) { RETRY_BACKOFF_MS.last() }
+      // The upstream error's own RetryInfo wins over our fixed backoff when it is
+      // present: the API states how long it wants us to wait, and retrying earlier
+      // is exactly what turns a rate limit into a self-inflicted failure.
+      val backoffMs = outcome.retryAfterMs
+        ?: RETRY_BACKOFF_MS.getOrElse(attempt - 1) { RETRY_BACKOFF_MS.last() }
       val remainingMs = deadlineMs - System.currentTimeMillis()
       if (attempt == maxAttempts || remainingMs <= backoffMs) {
         Log.w(TAG, "[D-VEX][AI] giving up after $attempt attempt(s) — ${outcome.reason} " +
-          "(model=$model, remaining=${remainingMs.coerceAtLeast(0)}ms of " +
+          "(model=$model, category=${outcome.category}, remaining=${remainingMs.coerceAtLeast(0)}ms of " +
           "${RETRY_TOTAL_BUDGET_MS}ms retry budget); response layer will use its fallback")
+        recordFailure(outcome)
         break
       }
       Log.i(TAG, "[D-VEX][AI] retryable failure — ${outcome.reason}; retrying after ${backoffMs}ms " +
-        "(attempt $attempt of $maxAttempts, model=$model)")
+        "(attempt $attempt of $maxAttempts, model=$model, category=${outcome.category})")
       delay(backoffMs)
     }
     AiModelTurn(text = answer, toolCalls = selected)
+  }
+
+  /**
+   * FREE-FIRST: turns one finished failure into the shared gate's next state.
+   *
+   * Only two outcomes close the gate for other turns:
+   * - a spent plan quota (nothing we retry can fix it today), and
+   * - a transport/upstream fault (retrying it on the very next user message would
+   *   be the same request again).
+   * A malformed request, a bad key or a retired model id is a BUG, not an outage,
+   * so those leave the gate open and the next turn still tries Gemini — otherwise a
+   * single typo would silently disable the cloud AI forever.
+   */
+  private fun recordFailure(outcome: AttemptOutcome) {
+    when (outcome.category) {
+      FailureCategory.QUOTA_EXHAUSTED.token ->
+        quotaState.onQuotaExhausted(outcome.retryAfterMs, "HTTP 429 free-tier quota exhausted")
+      FailureCategory.RATE_LIMIT.token,
+      FailureCategory.UPSTREAM.token,
+      FailureCategory.TIMEOUT.token,
+      FailureCategory.NETWORK.token,
+      FailureCategory.TLS.token ->
+        quotaState.onTemporaryFailure(outcome.reason)
+      else -> Unit
+    }
   }
 
   /**
@@ -219,18 +279,33 @@ class GeminiEngine(
             500, 502, 503, 504 -> " — Gemini temporarily unavailable upstream"
             else -> ""
           }
+          // A 429 is NOT automatically transient. The free tier answers 429 for a
+          // DAILY request cap ("generate_content_free_tier_requests ... limit: 20"),
+          // which cannot recover inside an 18s retry budget: retrying it only
+          // spends the user's latency and returns to the same fallback. Only a
+          // short rate-limit window is worth another attempt.
+          val category = classifyHttp(response.code, apiMessage)
           Log.w(TAG, "[D-VEX][AI] exception=HTTP ${response.code} from generativelanguage.googleapis.com " +
-            "(model=$model)$hint apiMessage=${redact(apiMessage, apiKey).take(MAX_ERROR_LOG_CHARS)}")
+            "(model=$model)$hint category=${category.token} " +
+            "retryable=${category.retryable && response.code in RETRYABLE_STATUS_CODES} " +
+            "apiMessage=${redact(apiMessage, apiKey).take(MAX_ERROR_LOG_CHARS)}")
           return AttemptOutcome(
             text = null,
-            retryable = response.code in RETRYABLE_STATUS_CODES,
-            reason = "HTTP ${response.code}"
+            retryable = category.retryable && response.code in RETRYABLE_STATUS_CODES,
+            reason = "HTTP ${response.code} (${category.token})",
+            category = category.token,
+            retryAfterMs = retryAfterFrom(apiMessage)
           )
         }
 
         val raw = response.body?.string() ?: run {
-          Log.w(TAG, "[D-VEX][AI] empty — HTTP ok but response body missing")
-          return AttemptOutcome(text = null, retryable = false, reason = "HTTP ok but no body")
+          Log.w(TAG, "[D-VEX][AI] empty — HTTP ok but response body missing (category=${FailureCategory.EMPTY_RESPONSE.token})")
+          return AttemptOutcome(
+            text = null,
+            retryable = false,
+            reason = "HTTP ok but no body",
+            category = FailureCategory.EMPTY_RESPONSE.token
+          )
         }
         val parsed = parseReply(raw)
         Log.i(TAG, "[D-VEX][AI] response parsed candidates=${parsed.candidates} parts=${parsed.parts} " +
@@ -243,7 +318,8 @@ class GeminiEngine(
         if (parsed.text.isNullOrBlank() && toolCalls.isEmpty()) {
           Log.w(TAG, "[D-VEX][AI] empty — response had no candidate text " +
             "(model=$model, finishReason=${parsed.finishReason ?: "none"}, " +
-            "blockReason=${parsed.blockReason ?: "none"}); thoughts/signatures are not answer text")
+            "blockReason=${parsed.blockReason ?: "none"}, " +
+            "category=${FailureCategory.EMPTY_RESPONSE.token}); thoughts/signatures are not answer text")
         } else if (toolCalls.isNotEmpty()) {
           Log.i(TAG, "[D-VEX][AI] model selected ${toolCalls.size} tool call(s): " +
             "${toolCalls.joinToString(", ") { it.toolName }} (selection only — D-VEX decides)")
@@ -254,6 +330,7 @@ class GeminiEngine(
           text = parsed.text,
           retryable = false,
           reason = if (toolCalls.isEmpty()) "no answer text" else "tool call selected",
+          category = if (toolCalls.isEmpty()) FailureCategory.EMPTY_RESPONSE.token else "OK",
           toolCalls = toolCalls
         )
       }
@@ -261,23 +338,121 @@ class GeminiEngine(
       // Timeouts (SocketTimeoutException) and IO failures both land here.
       // The class name separates "network too slow" from "no connectivity" at a
       // glance, and both are worth one more attempt.
+      val category = classifyException(e)
       Log.w(TAG, "[D-VEX][AI] exception=${e.javaClass.simpleName}: " +
         "${redact(e.message ?: "no message", apiKey)} (model=$model, " +
-        "read=${client.readTimeoutMillis}ms call=${client.callTimeoutMillis}ms)")
-      AttemptOutcome(text = null, retryable = true, reason = e.javaClass.simpleName)
+        "read=${client.readTimeoutMillis}ms call=${client.callTimeoutMillis}ms, " +
+        "category=${category.token})")
+      AttemptOutcome(
+        text = null,
+        retryable = category.retryable,
+        reason = "${e.javaClass.simpleName} (${category.token})",
+        category = category.token
+      )
     }
   }
 
   /**
-   * One attempt's result: the answer text, any tool call the model selected, and whether
-   * retrying could help.
+   * One attempt's result: the answer text, any tool call the model selected, whether
+   * retrying could help, the stable failure category, and the wait the upstream
+   * error itself asked for (null when it did not say).
    */
   private class AttemptOutcome(
     val text: String?,
     val retryable: Boolean,
     val reason: String,
+    val category: String = "OK",
+    val retryAfterMs: Long? = null,
     val toolCalls: List<DvexToolCall> = emptyList()
   )
+
+  /**
+   * WHY a turn produced no answer, as one stable token that appears in every
+   * `[D-VEX][AI]` log line. Exists because a single user-visible fallback line was
+   * covering genuinely different faults: "the daily free-tier quota is gone" and
+   * "the phone has no route to the internet" need different fixes, and a log that
+   * only said `HTTP 429` could not tell them apart.
+   *
+   * `retryable` answers one question only: could an identical request succeed
+   * within [RETRY_TOTAL_BUDGET_MS]? An exhausted daily quota cannot; a short
+   * rate-limit window can.
+   */
+  private enum class FailureCategory(val token: String, val retryable: Boolean) {
+    /** Free-tier/plan quota spent for the day or the month. Will not recover. */
+    QUOTA_EXHAUSTED("QUOTA_EXHAUSTED", false),
+    /** Short per-minute window; another attempt is worthwhile. */
+    RATE_LIMIT("RATE_LIMIT", true),
+    /** Body/model/field rejected: retrying an identical body cannot help. */
+    BAD_REQUEST("BAD_REQUEST", false),
+    /** Key missing, invalid, or not permitted for this model/project. */
+    AUTH("AUTH", false),
+    /** Model id is not servable. */
+    MODEL_NOT_FOUND("MODEL_NOT_FOUND", false),
+    /** Gemini itself failed (5xx). */
+    UPSTREAM("UPSTREAM", true),
+    /** Any other non-2xx status. */
+    HTTP_OTHER("HTTP_OTHER", false),
+    /** Read/call budget elapsed before the model answered. */
+    TIMEOUT("TIMEOUT", true),
+    /** DNS or connect failure: no route to the endpoint. */
+    NETWORK("NETWORK", true),
+    /** TLS/certificate failure. */
+    TLS("TLS", true),
+    /** 2xx, but nothing usable came back (blank text, thoughts only). */
+    EMPTY_RESPONSE("EMPTY_RESPONSE", false),
+    /** Reply could not be decoded as JSON at all. */
+    PARSE("PARSE", false)
+  }
+
+  /**
+   * Maps an HTTP status + the API's own error body onto one [FailureCategory].
+   *
+   * The distinction that matters is 429: the Generative Language API uses it both
+   * for a brief rate-limit window AND for an exhausted plan quota (the live body
+   * reads `Quota exceeded for metric: ...generate_content_free_tier_requests,
+   * limit: 20`). Only the first is worth retrying in the same turn.
+   */
+  private fun classifyHttp(code: Int, body: String): FailureCategory {
+    val upper = body.uppercase()
+    val quotaExhausted = upper.contains("QUOTA EXCEEDED") ||
+      upper.contains("QUOTA_FAILURE") ||
+      upper.contains("QUOTA EXCEEDED FOR METRIC") ||
+      upper.contains("BILLING") ||
+      upper.contains("FREE_TIER") ||
+      upper.contains("CHECK YOUR PLAN")
+    return when (code) {
+      400 -> FailureCategory.BAD_REQUEST
+      401, 403 -> FailureCategory.AUTH
+      404 -> FailureCategory.MODEL_NOT_FOUND
+      429 -> if (quotaExhausted) FailureCategory.QUOTA_EXHAUSTED else FailureCategory.RATE_LIMIT
+      500, 502, 503, 504 -> FailureCategory.UPSTREAM
+      else -> FailureCategory.HTTP_OTHER
+    }
+  }
+
+  /** Transport failures: separates "too slow" from "no network" from "TLS". */
+  private fun classifyException(e: Exception): FailureCategory = when (e) {
+    is java.net.SocketTimeoutException -> FailureCategory.TIMEOUT
+    is javax.net.ssl.SSLException -> FailureCategory.TLS
+    is java.security.cert.CertificateException -> FailureCategory.TLS
+    is java.net.UnknownHostException -> FailureCategory.NETWORK
+    is java.net.ConnectException -> FailureCategory.NETWORK
+    is java.io.InterruptedIOException -> FailureCategory.TIMEOUT
+    is java.io.IOException -> FailureCategory.NETWORK
+    else -> FailureCategory.NETWORK
+  }
+
+  /**
+   * The wait the API itself asked for, from its `RetryInfo` detail
+   * (`"retryDelay":"3.777996s"`). Honoured instead of the fixed backoff whenever it
+   * is present; returns null when the body carries none.
+   */
+  private fun retryAfterFrom(body: String): Long? {
+    val match = RETRY_DELAY_REGEX.find(body) ?: return null
+    val seconds = match.groupValues[1].toDoubleOrNull() ?: return null
+    if (seconds.isNaN() || seconds.isInfinite() || seconds < 0) return null
+    return (seconds * 1000.0).toLong()
+  }
 
   /** Diagnostics for one parsed reply. Never carries the key. */
   private data class ParsedReply(
@@ -410,5 +585,8 @@ class GeminiEngine(
 
     private val KEY_SHAPE_REGEX = Regex("""\b(AIza[0-9A-Za-z_\-]{10,}|AQ\.[0-9A-Za-z_.\-]{10,})""")
     private val KEY_QUERY_REGEX = Regex("""([?&]key=)[^&\s"']+""")
+
+    /** `"retryDelay":"3.5s"` inside the API's google.rpc.RetryInfo detail. */
+    private val RETRY_DELAY_REGEX = Regex(""""retryDelay"\s*:\s*"?([0-9]+(?:\.[0-9]+)?)s""")
   }
 }
