@@ -307,7 +307,12 @@ fun NotificationPanel(
 }
 
 /**
- * 3. SYSTEM STATUS PANEL
+ * 3. SYSTEM STATUS PANEL — REAL device vitals only.
+ *
+ * Telemetry audit: every bar is fed from SystemVitals, which is populated solely
+ * by Android system APIs. A null field means the source has not delivered a
+ * reading (or is unreadable on this device) and renders an empty bar + "--" —
+ * never a fabricated number. The header claims LIVE only once real data exists.
  */
 @Composable
 fun SystemStatusPanel(
@@ -316,7 +321,7 @@ fun SystemStatusPanel(
 ) {
   TacticalPanel(
     title = "Core Diagnostics",
-    headerTag = "LIVE VITAL",
+    headerTag = if (vitals.hasAnyData) "LIVE VITAL" else "NO VITAL DATA",
     modifier = modifier
   ) {
     Column(
@@ -324,13 +329,34 @@ fun SystemStatusPanel(
         .fillMaxWidth()
         .padding(10.dp)
     ) {
-      VitalBar(label = "CPU LOAD", valuePercent = vitals.cpuUsagePercent, tag = "${vitals.cpuTempCelsius}°C")
+      VitalBar(
+        label = "CPU LOAD",
+        valuePercent = vitals.cpuUsagePercent,
+        tag = vitals.cpuTempCelsius?.let { "$it°C" } ?: "--"
+      )
       Spacer(modifier = Modifier.height(6.dp))
-      VitalBar(label = "RAM ALLOC", valuePercent = vitals.ramUsagePercent, tag = "${vitals.ramUsagePercent}%")
+      VitalBar(
+        label = "RAM ALLOC",
+        valuePercent = vitals.ramUsagePercent,
+        tag = vitals.ramUsagePercent?.let { "$it%" } ?: "--"
+      )
       Spacer(modifier = Modifier.height(6.dp))
-      VitalBar(label = "STORAGE", valuePercent = vitals.storageUsagePercent, tag = "${vitals.storageUsagePercent}%")
+      VitalBar(
+        label = "STORAGE",
+        valuePercent = vitals.storageUsagePercent,
+        tag = vitals.storageUsagePercent?.let { "$it%" } ?: "--"
+      )
       Spacer(modifier = Modifier.height(6.dp))
-      VitalBar(label = "POWER CELL", valuePercent = vitals.batteryPercent, tag = "OPTIMAL")
+      VitalBar(
+        label = "POWER CELL",
+        valuePercent = vitals.batteryPercent,
+        // Real charging state from ACTION_BATTERY_CHANGED — never a fixed "OPTIMAL".
+        tag = when (vitals.isCharging) {
+          true -> "CHARGING"
+          false -> "ON BATTERY"
+          null -> "--"
+        }
+      )
     }
   }
 }
@@ -338,7 +364,8 @@ fun SystemStatusPanel(
 @Composable
 private fun VitalBar(
   label: String,
-  valuePercent: Int,
+  /** Null = no real reading yet: the bar renders empty and the tag shows "--". */
+  valuePercent: Int?,
   tag: String
 ) {
   Column(modifier = Modifier.fillMaxWidth()) {
@@ -373,7 +400,7 @@ private fun VitalBar(
     ) {
       Box(
         modifier = Modifier
-          .fillMaxWidth(valuePercent / 100f)
+          .fillMaxWidth((valuePercent ?: 0).coerceIn(0, 100) / 100f)
           .height(5.dp)
           .background(
             Brush.horizontalGradient(
@@ -387,11 +414,13 @@ private fun VitalBar(
 
 /**
  * 4. MEMORY CORE PANEL
- * Futuristic circular multi-ring memory gauge.
+ * Futuristic circular multi-ring memory gauge fed by the REAL ActivityManager
+ * reading. [percentage] is null until that reading exists and then renders an
+ * honest "--" with an empty arc — never a fabricated value.
  */
 @Composable
 fun MemoryCorePanel(
-  percentage: Int,
+  percentage: Int?,
   modifier: Modifier = Modifier
 ) {
   val infiniteTransition = rememberInfiniteTransition(label = "memorySpin")
@@ -446,7 +475,7 @@ fun MemoryCorePanel(
           }
 
           // Active Memory Arc
-          val sweep = (percentage / 100f) * 360f
+          val sweep = ((percentage ?: 0).coerceIn(0, 100) / 100f) * 360f
           drawArc(
             brush = Brush.sweepGradient(
               listOf(DvexNeonRedDim, DvexNeonRedBright, DvexNeonRed)
@@ -460,7 +489,7 @@ fun MemoryCorePanel(
 
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
           Text(
-            text = "$percentage%",
+            text = percentage?.let { "$it%" } ?: "--",
             fontFamily = FontFamily.Monospace,
             fontSize = 14.sp,
             fontWeight = FontWeight.Black,
@@ -480,16 +509,13 @@ fun MemoryCorePanel(
         )
         Spacer(modifier = Modifier.height(2.dp))
         Text(
-          text = "SECTORS: 16 // ACTIVE",
+          // Static descriptive label — this panel shows real device RAM. The old
+          // "SECTORS: 16 // ACTIVE" / "SYNAPSE INTEGRITY: 99.4%" lines invented
+          // measurements that no sensor ever reported; they are gone.
+          text = "REAL SYSTEM RAM",
           fontFamily = FontFamily.Monospace,
           fontSize = 8.sp,
           color = DvexTextSecondary
-        )
-        Text(
-          text = "SYNAPSE INTEGRITY: 99.4%",
-          fontFamily = FontFamily.Monospace,
-          fontSize = 7.sp,
-          color = DvexNeonRedDim
         )
       }
     }

@@ -30,9 +30,12 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
@@ -59,14 +62,43 @@ import com.example.ui.theme.DvexSurfaceDark
 import com.example.ui.theme.DvexTextMuted
 import com.example.ui.theme.DvexTextPrimary
 import com.example.ui.theme.DvexTextSecondary
+import kotlinx.coroutines.delay
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 @Composable
 fun DvexTopBar(
   uiState: DvexUiState,
   modifier: Modifier = Modifier,
   isCompact: Boolean = false,
-  onModeSelectorRequested: (() -> Unit)? = null
+  onModeSelectorRequested: (() -> Unit)? = null,
+  /** Injectable clock (tests); production reads the authoritative device time. */
+  timeSource: () -> Long = { System.currentTimeMillis() }
 ) {
+  // LIVE DEVICE CLOCK (bug fix): the header previously rendered the hardcoded
+  // "08:45 PM  //  22 AUG 2026" forever. It now re-reads the system clock every
+  // second, so time, date, day and rollover are always the real local values in
+  // the device's configured timezone and locale — never a stale startup value.
+  var nowMs by remember { mutableStateOf(timeSource()) }
+  LaunchedEffect(Unit) {
+    while (true) {
+      nowMs = timeSource()
+      delay(1_000L)
+    }
+  }
+  val timeText = remember(nowMs) {
+    SimpleDateFormat("hh:mm a", Locale.getDefault()).format(Date(nowMs)).uppercase(Locale.getDefault())
+  }
+  val dateText = remember(nowMs) {
+    SimpleDateFormat("dd MMM yyyy", Locale.getDefault()).format(Date(nowMs)).uppercase(Locale.getDefault())
+  }
+
+  // Real telemetry labels: honest "--" until the system source delivers a reading,
+  // never an invented network, battery or status string.
+  val networkLabel = uiState.systemStatus.networkLabel ?: "--"
+  val batteryLabel = uiState.systemStatus.batteryPercent?.let { "$it%" } ?: "--"
+  val systemStatusLabel = uiState.systemStatus.thermalStatus ?: "--"
   val infiniteTransition = rememberInfiniteTransition(label = "pulseTransition")
   val pulseAlpha by infiniteTransition.animateFloat(
     initialValue = 0.35f,
@@ -159,7 +191,7 @@ fun DvexTopBar(
           )
         }
         Text(
-          text = "08:45 PM  //  22 AUG 2026",
+          text = "$timeText  //  $dateText",
           fontFamily = FontFamily.Monospace,
           fontSize = 9.sp,
           fontWeight = FontWeight.Medium,
@@ -195,7 +227,7 @@ fun DvexTopBar(
                 color = DvexTextMuted
               )
               Text(
-                text = "5G SECURE",
+                text = networkLabel,
                 fontFamily = FontFamily.Monospace,
                 fontSize = 8.sp,
                 fontWeight = FontWeight.Bold,
@@ -231,7 +263,7 @@ fun DvexTopBar(
                 color = DvexTextMuted
               )
               Text(
-                text = "${uiState.systemStatus.batteryPercent}%",
+                text = batteryLabel,
                 fontFamily = FontFamily.Monospace,
                 fontSize = 8.sp,
                 fontWeight = FontWeight.Bold,
@@ -260,7 +292,7 @@ fun DvexTopBar(
             color = DvexTextMuted
           )
           Text(
-            text = "OPTIMAL",
+            text = systemStatusLabel,
             fontFamily = FontFamily.Monospace,
             fontSize = 8.sp,
             fontWeight = FontWeight.Bold,

@@ -1,6 +1,7 @@
 package com.example.agent
 
 import android.content.Context
+import com.example.control.DvexContextProvider
 import com.example.brain.DvexIntent
 import com.example.brain.DvexToolResult
 import com.example.brain.DvexToolRouter
@@ -18,7 +19,9 @@ class DvexAgentEnvironment(
   val context: Context,
   val appLauncher: AppLauncherRepository,
   val deviceControl: DeviceControlRepository,
-  val toolRouter: DvexToolRouter
+  val toolRouter: DvexToolRouter,
+  /** Optional on-demand contextual awareness (advisory only). Null = same as before. */
+  val dvexContextProvider: DvexContextProvider? = null
 )
 
 /** One action type → one handler. Adding a capability means adding a handler here. */

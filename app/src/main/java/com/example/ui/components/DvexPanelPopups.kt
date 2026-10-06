@@ -457,7 +457,7 @@ fun DvexPanelPopupContent(
   weatherData: com.example.model.WeatherInfo,
   notifications: List<com.example.model.NotificationItem>,
   systemStatus: com.example.model.SystemVitals,
-  memoryPercentage: Int,
+  memoryPercentage: Int?,
   recentActivities: List<com.example.model.ActivityItem>,
   voiceState: com.example.model.VoiceState,
   powerModeEnabled: Boolean,

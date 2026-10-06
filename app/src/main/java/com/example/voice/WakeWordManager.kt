@@ -346,6 +346,51 @@ class AndroidSpeechWakeWordDetector(
 }
 
 /**
+ * IDLE RESTART BACKOFF — how long to wait before reopening a wake-word recognizer
+ * session after one that ended WITHOUT hearing any speech.
+ *
+ * Pure Kotlin (no Android types) so the cadence policy is unit-testable on the JVM.
+ * Every opened recognizer session is a fresh startListening() call to the system
+ * recognition service, and that service owns a start/stop cue Android gives apps no
+ * API to disable. Growing the gap during silence is therefore the only legitimate
+ * lever D-VEX has to reduce repeated cue playback in the background:
+ *
+ *  - silence-ended sessions widen: base -> 2x -> 4x (level cap), absolute cap 6s;
+ *  - ANY detected speech resets to the fastest interval immediately, so wake-word
+ *    latency is never degraded once the user is actually talking;
+ *  - error recovery paths keep their fixed base delays (the backoff never slows
+ *    recovery from BUSY/CLIENT/network faults);
+ *  - [reset] returns to the fastest cadence when the detector is stopped/re-armed.
+ */
+class IdleRestartBackoff(
+  private val maxLevel: Int = 3,
+  private val capMs: Long = 6_000L
+) {
+  private var level = 0
+
+  /** A session ended having heard no speech: widen the next gap. */
+  fun noteSilence() {
+    if (level < maxLevel) level++
+  }
+
+  /** Speech was detected: the next restart must be the fastest one. */
+  fun noteSpeech() {
+    level = 0
+  }
+
+  /** Backoff delay for a silence-ended session: base * 2^level, never above [capMs]. */
+  fun delayFor(baseMs: Long): Long = minOf(baseMs * (1L shl level), capMs)
+
+  /** Full reset (detector stop / new session cycle). */
+  fun reset() {
+    level = 0
+  }
+
+  /** Current growth level — diagnostics and tests only. */
+  val currentLevel: Int get() = level
+}
+
+/**
  * High-level Wake-Word Manager coordinating detector state and lifecycle.
  * Manages pluggable local wake-word detector with zero continuous cloud streaming.
  */
