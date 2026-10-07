@@ -45,6 +45,7 @@ import com.example.repository.AssistantRepository
 import com.example.ui.components.AgentAccessPopupHost
 import com.example.ui.components.DvexAiCore
 import com.example.ui.components.DvexConversationCard
+import com.example.ui.components.conversationCardTag
 import com.example.ui.components.DvexLeftSidebar
 import com.example.ui.components.DvexModeBadge
 import com.example.ui.components.DvexPanel
@@ -242,7 +243,9 @@ fun DvexHud(
           .align(Alignment.BottomEnd)
           .padding(end = 12.dp, bottom = 10.dp)
           .width(conversationCardWidth)
-          .heightIn(max = conversationCardMaxHeight)
+          .heightIn(max = conversationCardMaxHeight),
+          // Real session state: LIVE only while a turn is genuinely in flight.
+          headerTag = conversationCardTag(uiState.voiceState)
       )
 
       Row(

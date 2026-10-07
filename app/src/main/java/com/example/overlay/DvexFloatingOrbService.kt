@@ -73,7 +73,11 @@ import androidx.savedstate.SavedStateRegistryOwner
 import androidx.savedstate.setViewTreeSavedStateRegistryOwner
 import com.example.MainActivity
 import com.example.R
+import com.example.agent.AgentState
+import com.example.agent.DvexAgentStateController
 import com.example.model.DvexAssistantState
+import com.example.model.OrbDisplayState
+import com.example.model.OrbDisplayStateMapper
 import com.example.permissions.DvexPermissionManager
 import com.example.repository.AssistantRepository
 import com.example.ui.components.DvexEnergyOrb
@@ -86,8 +90,8 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
-import java.util.Locale
 import kotlin.math.abs
 
 /**
@@ -124,11 +128,19 @@ open class DvexFloatingOrbService : Service() {
       assistantRepo.startWakeWordListening()
     }
 
-    // Observe assistant state changes to update the ongoing system notification
+    // Observe the EXISTING assistant state AND the EXISTING agent pipeline state
+    // (DvexAgentStateController) to update the ongoing system notification.
+    // Pure mapping via OrbDisplayStateMapper — no new state machine, no polling,
+    // no background threads; just StateFlow collection on the existing service scope.
     stateObserverJob?.cancel()
     stateObserverJob = serviceScope.launch {
-      assistantRepo.assistantState.collectLatest { state ->
-        updateNotification(state)
+      combine(
+        assistantRepo.assistantState,
+        DvexAgentStateController.state
+      ) { voiceState, agentState ->
+        OrbDisplayStateMapper.map(agentState, voiceState)
+      }.collectLatest { displayState ->
+        updateNotification(displayState)
       }
     }
 
@@ -157,7 +169,12 @@ open class DvexFloatingOrbService : Service() {
   }
 
   private fun startAsForeground() {
-    val notification = buildNotification(assistantRepo.assistantState.value)
+    val notification = buildNotification(
+      OrbDisplayStateMapper.map(
+        DvexAgentStateController.state.value,
+        assistantRepo.assistantState.value
+      )
+    )
     try {
       if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
         startForeground(
@@ -173,7 +190,7 @@ open class DvexFloatingOrbService : Service() {
     }
   }
 
-  private fun buildNotification(state: DvexAssistantState): Notification {
+  private fun buildNotification(displayState: OrbDisplayState): Notification {
     val openIntent = Intent(this, MainActivity::class.java).apply {
       flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
     }
@@ -190,15 +207,18 @@ open class DvexFloatingOrbService : Service() {
       PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
     )
 
-    val statusSubtitle = when (state) {
-      is DvexAssistantState.Idle -> "Tactical Orb Active • Standby"
-      is DvexAssistantState.Standby -> "Tactical Orb Active • Standby"
-      is DvexAssistantState.WakeWordListening -> "Listening for \"D-VEX\"..."
-      is DvexAssistantState.Listening -> "Microphone Active • Listening to Command"
-      is DvexAssistantState.Processing -> "Analyzing Tactical Command..."
-      is DvexAssistantState.ExecutingAction -> "Executing: ${state.toolName}"
-      is DvexAssistantState.Speaking -> "Transmitting Response"
-      is DvexAssistantState.Error -> "Alert: ${state.message}"
+    // Same mapped state the Orb bubble uses — the notification never claims
+    // work that is not actually happening right now.
+    val statusSubtitle = when (displayState) {
+      OrbDisplayState.IDLE -> "Tactical Orb Active • Standby"
+      OrbDisplayState.LISTENING -> "Microphone Active • Listening to Command"
+      OrbDisplayState.THINKING -> "Analyzing Tactical Command..."
+      OrbDisplayState.PLANNING -> "Planning Tactical Action..."
+      OrbDisplayState.EXECUTING -> "Executing Action..."
+      OrbDisplayState.VERIFYING -> "Verifying Result..."
+      OrbDisplayState.SPEAKING -> "Transmitting Response"
+      OrbDisplayState.ERROR -> "Alert: Attention Required"
+      OrbDisplayState.CONFIRM -> "Confirmation Required • CONFIRM?"
     }
 
     return NotificationCompat.Builder(this, CHANNEL_ID_ORB)
@@ -213,9 +233,9 @@ open class DvexFloatingOrbService : Service() {
       .build()
   }
 
-  private fun updateNotification(state: DvexAssistantState) {
+  private fun updateNotification(displayState: OrbDisplayState) {
     val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-    notificationManager.notify(NOTIFICATION_ID_ORB, buildNotification(state))
+    notificationManager.notify(NOTIFICATION_ID_ORB, buildNotification(displayState))
   }
 
   private fun createNotificationChannel() {
@@ -269,11 +289,15 @@ open class DvexFloatingOrbService : Service() {
 
       setContent {
         val assistantState by assistantRepo.assistantState.collectAsState()
+        // Real agent pipeline state (IDLE/UNDERSTANDING/PLANNING/WAITING_FOR_PERMISSION/
+        // EXECUTING/VERIFYING/RESPONDING/ERROR) observed from the existing process-wide bus.
+        val agentState by DvexAgentStateController.state.collectAsState()
         val latestResponse by assistantRepo.latestResponse.collectAsState()
         val currentSettings by assistantRepo.settings.collectAsState()
 
         OrbFloatingContainer(
           assistantState = assistantState,
+          agentState = agentState,
           latestResponse = latestResponse,
           orbSize = currentSettings.orbSizeDp.dp
         )
@@ -469,54 +493,45 @@ open class DvexFloatingOrbService : Service() {
 @Composable
 private fun OrbFloatingContainer(
   assistantState: DvexAssistantState,
+  agentState: AgentState,
   latestResponse: String,
   orbSize: Dp
 ) {
   var isBubbleVisible by remember { mutableStateOf(false) }
   var currentBubbleText by remember { mutableStateOf("💬 Standby") }
 
-  LaunchedEffect(assistantState, latestResponse) {
-    val text = when (assistantState) {
-      is DvexAssistantState.Listening -> "💬 Listening..."
-      is DvexAssistantState.Processing -> "💬 Processing..."
-      is DvexAssistantState.ExecutingAction -> {
-        if (latestResponse.isNotBlank() && latestResponse.startsWith("Opening", ignoreCase = true)) {
-          "💬 $latestResponse"
-        } else if (assistantState.toolName.isNotBlank()) {
-          val cleanName = assistantState.toolName.replace("_", " ")
-          "💬 ${cleanName.replaceFirstChar { if (it.isLowerCase()) it.titlecase(Locale.ROOT) else it.toString() }}..."
-        } else {
-          "💬 Executing..."
-        }
+  LaunchedEffect(assistantState, agentState, latestResponse) {
+    // Pure projection of the two REAL state sources. No state is shown unless
+    // its underlying flow actually transitioned — no fake progress, ever.
+    val displayState = OrbDisplayStateMapper.map(agentState, assistantState)
+
+    val text = when (displayState) {
+      OrbDisplayState.IDLE -> when (assistantState) {
+        // Existing idle behavior preserved verbatim.
+        is DvexAssistantState.WakeWordListening -> "💬 Standby"
+        else -> "💬 Idle"
       }
-      is DvexAssistantState.Speaking -> {
-        if (latestResponse.isNotBlank() && latestResponse.length <= 26) {
-          "💬 $latestResponse"
-        } else {
-          "💬 Speaking..."
-        }
-      }
-      is DvexAssistantState.Error -> "💬 Alert: ${assistantState.message.take(18)}"
-      is DvexAssistantState.WakeWordListening -> "💬 Standby"
-      is DvexAssistantState.Standby, is DvexAssistantState.Idle -> "💬 Idle"
+      OrbDisplayState.LISTENING -> "💬 LISTENING"
+      OrbDisplayState.THINKING -> "💬 THINKING"
+      OrbDisplayState.PLANNING -> "💬 PLANNING"
+      OrbDisplayState.EXECUTING -> "💬 EXECUTING"
+      OrbDisplayState.VERIFYING -> "💬 VERIFYING"
+      OrbDisplayState.SPEAKING -> "💬 SPEAKING"
+      OrbDisplayState.ERROR -> "💬 ERROR"
+      OrbDisplayState.CONFIRM -> "💬 CONFIRM?"
     }
     currentBubbleText = text
 
-    when (assistantState) {
-      is DvexAssistantState.Listening,
-      is DvexAssistantState.Processing,
-      is DvexAssistantState.ExecutingAction,
-      is DvexAssistantState.Speaking,
-      is DvexAssistantState.Error -> {
-        isBubbleVisible = true
-      }
-      is DvexAssistantState.Standby,
-      is DvexAssistantState.Idle,
-      is DvexAssistantState.WakeWordListening -> {
+    when (displayState) {
+      OrbDisplayState.IDLE -> {
         // Show status briefly (e.g. "💬 Idle"), then fade out after 3.5 seconds
         isBubbleVisible = true
         delay(3500)
         isBubbleVisible = false
+      }
+      else -> {
+        // Active, honestly-reported work keeps the status visible.
+        isBubbleVisible = true
       }
     }
   }

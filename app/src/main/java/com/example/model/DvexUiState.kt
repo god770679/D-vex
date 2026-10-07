@@ -38,13 +38,33 @@ enum class NavItem(val title: String) {
   POWER("POWER")
 }
 
+/**
+ * REAL device vitals. Every field is nullable on purpose: null = the source has
+ * not delivered a reading yet (or is unreadable on this device), and the UI must
+ * render an honest "--" for it — never a fabricated default. Populated ONLY by
+ * AssistantViewModel from Android system APIs (ACTION_BATTERY_CHANGED broadcast,
+ * ActivityManager, StatFs, /proc/stat, thermal zone, ConnectivityManager,
+ * PowerManager thermal status).
+ */
 data class SystemVitals(
-  val cpuUsagePercent: Int = 42,
-  val ramUsagePercent: Int = 68,
-  val storageUsagePercent: Int = 54,
-  val batteryPercent: Int = 89,
-  val cpuTempCelsius: Int = 38
-)
+  val cpuUsagePercent: Int? = null,
+  val cpuTempCelsius: Int? = null,
+  val ramUsagePercent: Int? = null,
+  val storageUsagePercent: Int? = null,
+  val batteryPercent: Int? = null,
+  /** Real charging state from EXTRA_STATUS; null until the broadcast arrives. */
+  val isCharging: Boolean? = null,
+  /** Real transport label (WIFI / CELLULAR / OFFLINE / …); null until sampled. */
+  val networkLabel: String? = null,
+  /** Real thermal status (PowerManager, API 29+); null where unsupported. */
+  val thermalStatus: String? = null
+) {
+  /** True once ANY real reading has landed — drives LIVE vs honest-standby tags. */
+  val hasAnyData: Boolean
+    get() = cpuUsagePercent != null || cpuTempCelsius != null || ramUsagePercent != null ||
+      storageUsagePercent != null || batteryPercent != null || isCharging != null ||
+      networkLabel != null || thermalStatus != null
+}
 
 data class NotificationItem(
   val id: String,
@@ -110,7 +130,11 @@ data class DvexUiState(
   val voiceState: VoiceState = VoiceState.IDLE,
   val selectedNavigation: NavItem = NavItem.HOME,
   val systemStatus: SystemVitals = SystemVitals(),
-  val memoryPercentage: Int = 76,
+  /**
+   * Memory-core gauge percentage. Null until the REAL ActivityManager reading
+   * arrives — the previous hardcoded 76 was invented telemetry.
+   */
+  val memoryPercentage: Int? = null,
   /**
    * The LAST final D-VEX response (the exact string sent to TTS). Empty until the
    * brain has produced a real reply — never a hardcoded conversational line.

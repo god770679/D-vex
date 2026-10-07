@@ -1,6 +1,7 @@
 package com.example.agent
 
 import android.content.Context
+import com.example.control.DvexContextProvider
 import android.util.Log
 import com.example.brain.DvexIntent
 import com.example.brain.DvexToolResult
@@ -30,13 +31,21 @@ class DvexAgentEngine(
   private val appLauncher: AppLauncherRepository,
   private val deviceControl: DeviceControlRepository,
   private val toolRouter: DvexToolRouter,
+  /** Optional on-demand context provider (advisory only). Defaults to none — same as before. */
+  private val dvexContextProvider: DvexContextProvider? = null,
   private val capabilityManager: DvexCapabilityProbe = DvexCapabilityManager(context),
   private val registry: DvexActionRegistry = DvexActionRegistry.withDefaults(),
   val taskContext: DvexTaskContext = DvexTaskContext()
 ) {
 
   private val planner = DvexTaskPlanner(taskContext)
-  private val env = DvexAgentEnvironment(context, appLauncher, deviceControl, toolRouter)
+  private val env = DvexAgentEnvironment(
+    context = context,
+    appLauncher = appLauncher,
+    deviceControl = deviceControl,
+    toolRouter = toolRouter,
+    dvexContextProvider = dvexContextProvider
+  )
 
   /** Plan for an intent, or null when the existing tool router should handle it. */
   fun planFor(intent: DvexIntent, rawInput: String = ""): DvexTaskPlan? =

@@ -406,4 +406,38 @@ class DvexResponseGeneratorLlmTest {
     val response = engine.generate("test prompt")
     assertEquals(null, response)
   }
+
+  // ---------------------------------------------------------------------
+  // P3 — conversational quality: natural target shapes, robotic lines banned
+  // ---------------------------------------------------------------------
+
+  @Test
+  fun conversationPromptDefinesNaturalTargetShapesWithoutCannedReplies() {
+    val prompt = conversationPromptFor("what is the time", DetectedLanguage.ENGLISH)
+
+    // Natural shapes are taught as RULES, not literal example sentences: D-VEX
+    // must skip throwaway acknowledgements, lead with the real answer, and vary
+    // its wording so no two replies share the same shape.
+    assertTrue(
+      "no throwaway opener — lead with the answer: $prompt",
+      prompt.contains("Lead with the actual answer instead")
+    )
+    assertTrue(
+      "varied natural shapes required: $prompt",
+      prompt.contains("Vary your sentence structure")
+    )
+
+    // Canned/robotic openers are banned by name — the exact filler lines a
+    // command-parser assistant would produce. The old fixed banned-output list
+    // ("Standing by", "Command executed successfully") was replaced in the
+    // prompt redesign by this explicit opener/filler ban.
+    assertTrue("bans sure-opener: $prompt", prompt.contains("\"Sure\""))
+    assertTrue("bans ready-speak: $prompt", prompt.contains("\"I am ready\""))
+    assertTrue(
+      "bans assistant-canned-speak: $prompt",
+      prompt.contains("\"How can I assist you\"")
+    )
+    assertTrue("bans understood-speak: $prompt", prompt.contains("\"Understood\""))
+    assertTrue("bans certainly-speak: $prompt", prompt.contains("\"Certainly\""))
+  }
 }

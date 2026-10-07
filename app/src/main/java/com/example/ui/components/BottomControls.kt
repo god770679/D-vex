@@ -202,6 +202,22 @@ fun MicrophoneButton(
 }
 
 /**
+ * LIVE badge for the conversation card — REAL pipeline state only (P5: the "LIVE"
+ * label must represent the actual mode it claims, never a decorative always-on
+ * tag). The card is LIVE exactly while a voice/response turn is genuinely in
+ * flight; otherwise it is STANDBY. Pure function so the transition is unit-tested.
+ */
+fun conversationCardTag(voiceState: VoiceState): String = when (voiceState) {
+  VoiceState.LISTENING,
+  VoiceState.PROCESSING,
+  VoiceState.SPEAKING,
+  VoiceState.EXECUTING_ACTION -> "LIVE"
+  VoiceState.IDLE,
+  VoiceState.STANDBY,
+  VoiceState.ERROR -> "STANDBY"
+}
+
+/**
  * BOTTOM-RIGHT compact conversation card.
  *
  * Shows the LAST real exchange: what the user said or typed, and the final D-VEX
@@ -215,11 +231,13 @@ fun MicrophoneButton(
 fun DvexConversationCard(
   userInput: String,
   responseText: String,
-  modifier: Modifier = Modifier
+  modifier: Modifier = Modifier,
+  /** Real session tag from [conversationCardTag]; LIVE only while a turn runs. */
+  headerTag: String = "STANDBY"
 ) {
   TacticalPanel(
     title = "D-VEX RESPONSE",
-    headerTag = "LIVE",
+    headerTag = headerTag,
     modifier = modifier
   ) {
     Column(
