@@ -231,11 +231,13 @@ fun conversationCardTag(voiceState: VoiceState): String = when (voiceState) {
 fun DvexConversationCard(
   userInput: String,
   responseText: String,
-  modifier: Modifier = Modifier
+  modifier: Modifier = Modifier,
+  /** Real session tag from [conversationCardTag]; LIVE only while a turn runs. */
+  headerTag: String = "STANDBY"
 ) {
   TacticalPanel(
     title = "D-VEX RESPONSE",
-    headerTag = "LIVE",
+    headerTag = headerTag,
     modifier = modifier
   ) {
     Column(
