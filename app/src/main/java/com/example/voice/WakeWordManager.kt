@@ -29,6 +29,29 @@ interface WakeWordDetector {
 }
 
 /**
+ * Optional capability a detector may implement so the settings layer can push a
+ * validated wake phrase, TTS echo-suppression, and the last spoken utterance down
+ * to the ACTIVE detector without the manager having to know its concrete class.
+ *
+ * Dispatch contract: [WakeWordManager] reaches these through `as? WakeWordCapability`.
+ * A detector that does NOT implement this interface simply cannot accept a live
+ * phrase change (updateKeyword returns false); it is never a crash.
+ */
+interface WakeWordCapability {
+  /**
+   * Applies a new wake phrase. @return true when the detector accepted and applied
+   * it; false when it rejected it (invalid phrase) or cannot reconfigure live.
+   */
+  fun setKeyword(keyword: String): Boolean
+
+  /** True while D-VEX is speaking, so the detector can suppress self-triggering. */
+  fun setAudioSuppressed(suppressed: Boolean)
+
+  /** Feeds the last spoken TTS text to the detector for acoustic-echo suppression. */
+  fun setRecentTtsUtterance(text: String)
+}
+
+/**
  * Standard Android-native wake-word detector using continuous SpeechRecognizer
  * checking for keywords like "D-VEX", "DVEX", "DEE VEX", or "Hey D-VEX".
  * Operates strictly locally on-device without streaming continuous audio to cloud.
@@ -36,7 +59,7 @@ interface WakeWordDetector {
 class AndroidSpeechWakeWordDetector(
   private val context: Context,
   private var keyword: String = "D-VEX"
-) : WakeWordDetector {
+) : WakeWordDetector, WakeWordCapability {
 
   override val name: String = "Android Speech Trigger Engine (Local)"
 
@@ -76,15 +99,16 @@ class AndroidSpeechWakeWordDetector(
     }
   }
 
-  fun setKeyword(newKeyword: String) {
-    this.keyword = newKeyword
+  override fun setKeyword(keyword: String): Boolean {
+    this.keyword = keyword
+    return true
   }
 
-  fun setAudioSuppressed(suppressed: Boolean) {
+  override fun setAudioSuppressed(suppressed: Boolean) {
     this.isAudioSuppressed = suppressed
   }
 
-  fun setRecentTtsUtterance(text: String) {
+  override fun setRecentTtsUtterance(text: String) {
     this.lastSpokenText = text.lowercase(Locale.ROOT).trim()
     this.lastSpokenTimestampMs = System.currentTimeMillis()
   }
@@ -396,13 +420,23 @@ class IdleRestartBackoff(
  */
 class WakeWordManager(
   private val context: Context,
-  private var detector: WakeWordDetector = AndroidSpeechWakeWordDetector(context)
+  private var detector: WakeWordDetector = SherpaOnnxWakeWordDetector(context)
 ) {
 
   private val _state = MutableStateFlow<WakeWordState>(WakeWordState.Disabled)
   val state: StateFlow<WakeWordState> = _state.asStateFlow()
 
   private var onTriggerListener: ((String) -> Unit)? = null
+
+  /**
+   * STALE-CALLBACK GUARD (Phase-10 regression): the offline detector posts its
+   * trigger/error from the capture thread to the main looper AFTER releasing the
+   * microphone, so stop()/enterStandby() can legally run before that queued
+   * callback executes. Every start() captures the CURRENT [generation]; a callback
+   * whose captured generation no longer matches was queued by a previous arm and is
+   * dropped before it can open a session or overwrite the state.
+   */
+  private var generation: Long = 0L
 
   /**
    * Hard trigger gate (voice-session lifecycle): when it returns false, wake-word
@@ -443,19 +477,26 @@ class WakeWordManager(
     Log.i(TAG, "Swapped wake-word detector to: ${newDetector.name}")
   }
 
-  fun updateKeyword(keyword: String) {
-    (detector as? AndroidSpeechWakeWordDetector)?.setKeyword(keyword)
+  /**
+   * Pushes a (validated) wake phrase to the active detector through the capability
+   * interface. @return true when the detector accepted it; false when the detector
+   * has no capability or rejected the phrase (the active phrase is unchanged).
+   */
+  fun updateKeyword(keyword: String): Boolean {
+    val capability = detector as? WakeWordCapability ?: return false
+    return capability.setKeyword(keyword)
   }
 
   fun setAudioSuppressed(suppressed: Boolean) {
-    (detector as? AndroidSpeechWakeWordDetector)?.setAudioSuppressed(suppressed)
+    (detector as? WakeWordCapability)?.setAudioSuppressed(suppressed)
   }
 
   fun setRecentTtsUtterance(text: String) {
-    (detector as? AndroidSpeechWakeWordDetector)?.setRecentTtsUtterance(text)
+    (detector as? WakeWordCapability)?.setRecentTtsUtterance(text)
   }
 
   fun enterStandby() {
+    generation++ // invalidate any trigger/error still queued from the previous arm
     if (detector.isRunning()) {
       detector.stop()
     }
@@ -472,8 +513,15 @@ class WakeWordManager(
 
     _state.value = WakeWordState.Listening
     Log.i(TAG, "Wake word listening started (local on-device engine)")
+    val armedGeneration = ++generation
     detector.start(
       onTrigger = { keyword ->
+        // STALE GUARD: a callback queued by a previous arm (before stop/standby)
+        // must never open a session or fire the pipeline.
+        if (armedGeneration != generation) {
+          Log.w(TAG, "Stale wake trigger dropped (previous generation)")
+          return@start
+        }
         // Session gate: while a wake/command voice session is active, any late or
         // duplicate detector callback is dropped here before reaching the pipeline.
         if (!shouldAcceptTrigger()) {
@@ -485,6 +533,12 @@ class WakeWordManager(
         onTriggerListener?.invoke(keyword)
       },
       onError = { error ->
+        // STALE GUARD: an error queued by a previous arm must not resurface over
+        // Disabled/Standby.
+        if (armedGeneration != generation) {
+          Log.w(TAG, "Stale wake error dropped (previous generation)")
+          return@start
+        }
         _state.value = WakeWordState.Error(error)
         Log.w(TAG, "Wake word detector error: $error")
       }
@@ -492,6 +546,7 @@ class WakeWordManager(
   }
 
   fun stop() {
+    generation++ // invalidate any trigger/error still queued by the detector
     detector.stop()
     _state.value = WakeWordState.Disabled
     Log.i(TAG, "Wake word listening stopped")

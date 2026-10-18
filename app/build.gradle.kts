@@ -97,6 +97,11 @@ googleServices { missingGoogleServicesStrategy = MissingGoogleServicesStrategy.W
 // Some unused dependencies are commented out below instead of being removed.
 // This makes it easy to add them back in the future if needed.
 dependencies {
+  // sherpa-onnx v1.13.8 offline wake-word engine (official GitHub release AAR,
+  // sha256 633c24321e06b1fe79feafa03ea16cbc0f8a286641e2da3559bac91bdb13bd96,
+  // Apache-2.0). Not published to Maven Central; consumed from the project-local
+  // Maven mirror at <rootDir>/repo (declared in settings.gradle.kts).
+  implementation("com.k2fsa:sherpa-onnx-android:1.13.8")
   implementation(platform(libs.androidx.compose.bom))
   implementation(platform(libs.firebase.bom))
   // implementation(libs.accompanist.permissions)

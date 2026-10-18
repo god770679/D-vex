@@ -19,6 +19,11 @@ dependencyResolutionManagement {
   repositories {
     google()
     mavenCentral()
+    // Project-local mirror for artifacts not published to Maven Central:
+    // com.k2fsa:sherpa-onnx-android:1.13.8 (Apache-2.0, GitHub release v1.13.8).
+    maven {
+      url = uri(rootDir.resolve("repo"))
+    }
   }
 }
 

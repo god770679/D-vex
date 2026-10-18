@@ -276,6 +276,103 @@ class DvexMcpRegistry private constructor(
         "Turn the media volume down one step.",
         DvexCapability.MEDIA
       )
+
+      AgentActionType.WEB_SEARCH -> tool(
+        type,
+        "Search the web and open the results in the browser.",
+        DvexCapability.LAUNCH_URL,
+        inputFields = listOf(required("query", "What to search the web for."))
+      )
+
+      AgentActionType.SEARCH_INSTALLED_APPS -> tool(
+        type,
+        "Find an installed app by name, reporting the matching labels and packages.",
+        DvexCapability.APP_LAUNCH,
+        inputFields = listOf(required("query", "App name to look for."))
+      )
+
+      AgentActionType.ANALYZE_CAMERA_FRAME -> tool(
+        type,
+        "Look at the current camera frame and answer a question about what is visible.",
+        DvexCapability.CAMERA,
+        inputFields = listOf(optional("question", "What to answer about the scene. Defaults to a general description."))
+      )
+
+      AgentActionType.START_LIVE_VISION -> tool(
+        type,
+        "Start continuous camera analysis and report insights as they arrive.",
+        DvexCapability.CAMERA,
+        risk = ActionRisk.HIGH
+      )
+
+      AgentActionType.STOP_LIVE_VISION -> tool(
+        type,
+        "Stop the continuous camera analysis loop.",
+        DvexCapability.CAMERA
+      )
+
+      AgentActionType.OPEN_APPS_SETTINGS -> tool(
+        type,
+        "Open the device's list of installed apps in settings.",
+        DvexCapability.SETTINGS
+      )
+
+      AgentActionType.OPEN_APP_SETTINGS -> tool(
+        type,
+        "Open a specific app's settings / info screen.",
+        DvexCapability.SETTINGS,
+        inputFields = listOf(required("app_name", "Name of the app whose settings to open."))
+      )
+
+      AgentActionType.CLOSE_APP -> tool(
+        type,
+        "Ask Android to stop an app running in the background.",
+        DvexCapability.APP_LAUNCH,
+        inputFields = listOf(required("app_name", "Name of the app to close."))
+      )
+
+      AgentActionType.FLASHLIGHT_CONTROL -> tool(
+        type,
+        "Turn the flashlight (torch) on or off.",
+        DvexCapability.CAMERA,
+        inputFields = listOf(optional("state", "Either \"on\" or \"off\". Toggles when omitted."))
+      )
+
+      AgentActionType.FLASHLIGHT_STATUS -> tool(
+        type,
+        "Report whether the flashlight is currently on.",
+        DvexCapability.CAMERA
+      )
+
+      AgentActionType.WIFI_STATUS -> tool(
+        type,
+        "Report the current Wi-Fi connection state.",
+        DvexCapability.SETTINGS
+      )
+
+      AgentActionType.BLUETOOTH_STATUS -> tool(
+        type,
+        "Report whether Bluetooth is currently on.",
+        DvexCapability.SETTINGS
+      )
+
+      AgentActionType.BATTERY_STATUS -> tool(
+        type,
+        "Report the battery percentage and charging state.",
+        DvexCapability.SETTINGS
+      )
+
+      AgentActionType.NETWORK_STATUS -> tool(
+        type,
+        "Report the current network / internet connection state.",
+        DvexCapability.SETTINGS
+      )
+
+      AgentActionType.STORAGE_STATUS -> tool(
+        type,
+        "Report used and free device storage.",
+        DvexCapability.SETTINGS
+      )
     }
 
     // --- helpers -------------------------------------------------------------

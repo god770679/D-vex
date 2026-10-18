@@ -18,6 +18,8 @@ import com.example.model.DvexAssistantState
 import com.example.model.DvexSettings
 import com.example.permissions.DvexPermissionManager
 import com.example.voice.SpeechRecognizerManager
+import com.example.voice.DvexWakePhraseValidator
+import com.example.voice.WakePhraseTokenizer
 import com.example.voice.TextToSpeechManager
 import com.example.voice.VoiceSessionStateMachine
 import com.example.voice.VoiceSessionStateMachine.CommandEndReason
@@ -108,24 +110,38 @@ class AssistantRepository private constructor(private val context: Context) {
   }
 
   fun updateSettings(newSettings: DvexSettings) {
-    _settings.value = newSettings
+    // Validate the wake phrase BEFORE persisting (offline tokenizer is the source of
+    // truth). An invalid phrase is ignored rather than stored, so a bad value can
+    // never reach the offline sherpa-onnx keyword engine.
+    val phraseResult = DvexWakePhraseValidator.validate(context, newSettings.wakePhrase)
+    val effectiveSettings = if (phraseResult is WakePhraseTokenizer.Result.Invalid) {
+      Log.w(
+        TAG_WAKE,
+        "Ignoring invalid wake phrase \"${newSettings.wakePhrase}\": ${phraseResult.reason}"
+      )
+      newSettings.copy(wakePhrase = _settings.value.wakePhrase)
+    } else {
+      newSettings
+    }
+
+    _settings.value = effectiveSettings
     prefs.edit()
-      .putBoolean("always_ready", newSettings.alwaysReadyEnabled)
-      .putBoolean("floating_orb", newSettings.floatingOrbEnabled)
-      .putBoolean("wake_word", newSettings.wakeWordEnabled)
-      .putString("wake_word_keyword", newSettings.wakePhrase)
-      .putString("wake_phrase", newSettings.wakePhrase)
-      .putInt("orb_size_dp", newSettings.orbSizeDp)
-      .putBoolean("voice_response", newSettings.voiceResponseEnabled)
-      .putBoolean("accessibility_control", newSettings.accessibilityControlEnabled)
-      .putInt("orb_x", newSettings.orbPositionX)
-      .putInt("orb_y", newSettings.orbPositionY)
+      .putBoolean("always_ready", effectiveSettings.alwaysReadyEnabled)
+      .putBoolean("floating_orb", effectiveSettings.floatingOrbEnabled)
+      .putBoolean("wake_word", effectiveSettings.wakeWordEnabled)
+      .putString("wake_word_keyword", effectiveSettings.wakePhrase)
+      .putString("wake_phrase", effectiveSettings.wakePhrase)
+      .putInt("orb_size_dp", effectiveSettings.orbSizeDp)
+      .putBoolean("voice_response", effectiveSettings.voiceResponseEnabled)
+      .putBoolean("accessibility_control", effectiveSettings.accessibilityControlEnabled)
+      .putInt("orb_x", effectiveSettings.orbPositionX)
+      .putInt("orb_y", effectiveSettings.orbPositionY)
       .apply()
 
-    wakeWordManager.updateKeyword(newSettings.wakePhrase)
+    wakeWordManager.updateKeyword(effectiveSettings.wakePhrase)
 
     // Coordinate wake-word listener
-    if (newSettings.wakeWordEnabled && DvexPermissionManager.hasAudioPermission(context)) {
+    if (effectiveSettings.wakeWordEnabled && DvexPermissionManager.hasAudioPermission(context)) {
       if (_assistantState.value is DvexAssistantState.Idle || _assistantState.value is DvexAssistantState.Standby) {
         startWakeWordListening()
       }

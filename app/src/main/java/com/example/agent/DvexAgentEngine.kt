@@ -35,16 +35,19 @@ class DvexAgentEngine(
   private val dvexContextProvider: DvexContextProvider? = null,
   private val capabilityManager: DvexCapabilityProbe = DvexCapabilityManager(context),
   private val registry: DvexActionRegistry = DvexActionRegistry.withDefaults(),
-  val taskContext: DvexTaskContext = DvexTaskContext()
+  val taskContext: DvexTaskContext = DvexTaskContext(),
+  /** Camera-vision seam (Phase 5): forwarded to handlers via [DvexAgentEnvironment]. */
+  private val vision: com.example.vision.VisionOperations? = null
 ) {
 
-  private val planner = DvexTaskPlanner(taskContext)
+  private val planner = DvexTaskPlanner(taskContext, registry)
   private val env = DvexAgentEnvironment(
     context = context,
     appLauncher = appLauncher,
     deviceControl = deviceControl,
     toolRouter = toolRouter,
-    dvexContextProvider = dvexContextProvider
+    dvexContextProvider = dvexContextProvider,
+    vision = vision
   )
 
   /** Plan for an intent, or null when the existing tool router should handle it. */
@@ -59,10 +62,29 @@ class DvexAgentEngine(
   /**
    * Runs the agent path when the intent is agent-owned.
    * Returns null otherwise so the caller keeps the existing behaviour untouched.
+   *
+   * Uses the structured [planOutcome] so an unsupported step or an ambiguous target
+   * is reported HONESTLY as a tool result (unsupported / clarification) with no
+   * authored speech — never silently dropped and never guessed.
    */
   suspend fun executeIfApplicable(intent: DvexIntent, rawInput: String): DvexToolResult? {
-    val plan = planner.plan(intent, rawInput) ?: return null
-    return runPlan(plan)
+    return when (val outcome = planner.planOutcome(intent, rawInput)) {
+      is PlanOutcome.NotAgentOwned -> null
+      is PlanOutcome.Represented -> runPlan(outcome.plan)
+      is PlanOutcome.Unsupported -> DvexToolResult(
+        status = DvexToolStatus.UNSUPPORTED,
+        toolName = "agent",
+        message = outcome.reason,
+        spokenText = ""
+      )
+      is PlanOutcome.Clarification -> DvexToolResult(
+        status = DvexToolStatus.UNSUPPORTED,
+        toolName = "agent",
+        message = outcome.prompt,
+        spokenText = "",
+        clarificationRequired = true
+      )
+    }
   }
 
   /** Runs a plan end to end and converts the honest task result into a tool result. */
@@ -76,13 +98,18 @@ class DvexAgentEngine(
     return result.toToolResult()
   }
 
-  /** Executes every step in order, stopping honestly at the first non-success. */
+  /**
+   * Runs one bounded recovery pass over [plan]: every step gets ONE retry when its
+   * failure is classified [FailureClass.RECOVERABLE]; a [FailureClass.TERMINAL]
+   * failure stops immediately. Never loops.
+   */
   suspend fun executePlan(plan: DvexTaskPlan): DvexTaskResult {
     if (plan.isEmpty) {
       return DvexTaskResult(plan, emptyList(), null, "")
     }
 
     val results = mutableListOf<Pair<AgentAction, AgentActionResult>>()
+    var recoveryAttempts = 0
 
     for ((index, action) in plan.steps.withIndex()) {
       // 1. Permission / capability check — never execute without the real grant.
@@ -91,29 +118,52 @@ class DvexAgentEngine(
         // Surface the missing capability as an action card, never a silent failure.
         DvexAgentStateController.transition(AgentState.WAITING_FOR_PERMISSION)
         AgentActivityController.requireAccess(cardCapabilityFor(action), waitingForPermission = false)
-        return stopWith(plan, results, index, action, capabilityResult(action, capabilityState))
+        val capabilityOutcome = capabilityResult(action, capabilityState)
+        results += action to capabilityOutcome
+        return DvexTaskResult(
+          plan = plan,
+          steps = results,
+          failedAtStep = index,
+          failureReason = capabilityOutcome.message,
+          recoveryAttempts = recoveryAttempts,
+          permissionRequired = capabilityOutcome.requiredPermission,
+          unsupportedReason = capabilityOutcome.message.takeIf {
+            capabilityState is CapabilityState.Unsupported
+          }
+        )
       }
 
       // 2. Safety policy — irreversible / outward-facing actions wait for consent.
-      if (DvexActionPolicy.requiresConfirmation(action)) {
-        return stopWith(
-          plan, results, index, action,
-          AgentActionResult(
-            status = AgentActionStatus.REQUIRES_CONFIRMATION,
-            message = "Shall I ${plan.summary}?"
-          )
+      if (!plan.confirmed && DvexActionPolicy.requiresConfirmation(action)) {
+        val confirmResult = AgentActionResult(
+          status = AgentActionStatus.REQUIRES_CONFIRMATION,
+          message = "Shall I ${plan.summary}?"
+        )
+        results += action to confirmResult
+        return DvexTaskResult(
+          plan = plan,
+          steps = results,
+          failedAtStep = index,
+          failureReason = confirmResult.message,
+          recoveryAttempts = recoveryAttempts
         )
       }
 
       // 3. Handler lookup — an unregistered action is honestly unsupported.
       val handler = registry.handlerFor(action.type)
       if (handler == null) {
-        return stopWith(
-          plan, results, index, action,
-          AgentActionResult(
-            status = AgentActionStatus.UNSUPPORTED,
-            message = "I don't know how to do that yet."
-          )
+        val unsupportedResult = AgentActionResult(
+          status = AgentActionStatus.UNSUPPORTED,
+          message = "I don't know how to do that yet."
+        )
+        results += action to unsupportedResult
+        return DvexTaskResult(
+          plan = plan,
+          steps = results,
+          failedAtStep = index,
+          failureReason = unsupportedResult.message,
+          recoveryAttempts = recoveryAttempts,
+          unsupportedReason = unsupportedResult.message
         )
       }
 
@@ -125,14 +175,13 @@ class DvexAgentEngine(
         detail = cardDetailFor(action)
       )
 
-      val result = try {
-        handler.execute(action, env)
-      } catch (e: Exception) {
-        Log.w(TAG, "Action ${action.type} failed", e)
-        AgentActionResult(
-          status = AgentActionStatus.FAILURE,
-          message = "That action couldn't be completed."
-        )
+      var result = runHandler(handler, action)
+      // Bounded recovery: a RECOVERABLE failure is retried EXACTLY once, never more.
+      if (result.status == AgentActionStatus.FAILURE &&
+        result.failureClass == FailureClass.RECOVERABLE
+      ) {
+        recoveryAttempts++
+        result = runHandler(handler, action)
       }
 
       // 5. Verify + publish, then remember context for follow-ups.
@@ -150,42 +199,102 @@ class DvexAgentEngine(
             cardCapabilityFor(action),
             waitingForPermission = true
           )
-          return stopWith(plan, results, index, action, result)
+          results += action to result
+          return DvexTaskResult(
+            plan = plan,
+            steps = results,
+            failedAtStep = index,
+            failureReason = result.message,
+            recoveryAttempts = recoveryAttempts,
+            permissionRequired = result.requiredPermission
+          )
         }
 
         AgentActionStatus.REQUIRES_CONFIRMATION -> {
           AgentActivityController.update(cardId, AgentActivityStatus.RUNNING, cardDetailFor(action))
-          return stopWith(plan, results, index, action, result)
+          results += action to result
+          return DvexTaskResult(
+            plan = plan,
+            steps = results,
+            failedAtStep = index,
+            failureReason = result.message,
+            recoveryAttempts = recoveryAttempts
+          )
         }
 
         AgentActionStatus.UNSUPPORTED -> {
           AgentActivityController.fail(cardId, result.message)
-          return stopWith(plan, results, index, action, result)
+          results += action to result
+          return DvexTaskResult(
+            plan = plan,
+            steps = results,
+            failedAtStep = index,
+            failureReason = result.message,
+            recoveryAttempts = recoveryAttempts,
+            unsupportedReason = result.message
+          )
         }
 
         AgentActionStatus.FAILURE -> {
           AgentActivityController.fail(cardId, result.message)
-          return stopWith(plan, results, index, action, result)
+          results += action to result
+          return DvexTaskResult(
+            plan = plan,
+            steps = results,
+            failedAtStep = index,
+            failureReason = result.message,
+            recoveryAttempts = recoveryAttempts
+          )
         }
       }
     }
 
-    return DvexTaskResult(plan = plan, steps = results, failedAtStep = null, failureReason = "")
-  }
-
-  private fun stopWith(
-    plan: DvexTaskPlan,
-    results: MutableList<Pair<AgentAction, AgentActionResult>>,
-    index: Int,
-    action: AgentAction,
-    result: AgentActionResult
-  ): DvexTaskResult {
-    results += action to result
     return DvexTaskResult(
       plan = plan,
       steps = results,
-      failedAtStep = index,
-      failureReason = result.message
+      failedAtStep = null,
+      failureReason = "",
+      recoveryAttempts = recoveryAttempts
+    )
+  }
+
+  /**
+   * Runs [plan], and when it fails, performs at most ONE re-plan of the remaining
+   * registered steps ([DvexTaskPlanner.replanAfterFailure]) and runs that too. The
+   * combined result preserves honest partial state: completed steps, the first real
+   * failure, and the steps never executed.
+   */
+  suspend fun runTask(plan: DvexTaskPlan): DvexTaskResult {
+    val first = executePlan(plan)
+    if (first.isComplete || first.failedAtStep == null) return first
+
+    val revised = planner.replanAfterFailure(plan, first.failedAtStep) ?: return first
+    val second = executePlan(revised)
+
+    return DvexTaskResult(
+      plan = plan,
+      steps = first.steps + second.steps,
+      // The first pass's failure remains the primary reported failure.
+      failedAtStep = first.failedAtStep,
+      failureReason = first.failureReason,
+      recoveryAttempts = first.recoveryAttempts + second.recoveryAttempts,
+      replanned = true,
+      permissionRequired = first.permissionRequired ?: second.permissionRequired,
+      unsupportedReason = first.unsupportedReason ?: second.unsupportedReason
+    )
+  }
+
+  /** Executes one handler, converting an exception into an honest FAILURE. */
+  private suspend fun runHandler(
+    handler: AgentActionHandler,
+    action: AgentAction
+  ): AgentActionResult = try {
+    handler.execute(action, env)
+  } catch (e: Exception) {
+    Log.w(TAG, "Action ${action.type} failed", e)
+    AgentActionResult(
+      status = AgentActionStatus.FAILURE,
+      message = "That action couldn't be completed."
     )
   }
 
@@ -263,8 +372,8 @@ class DvexAgentEngine(
  * ([VerificationOutcome.DISPATCH_CONFIRMED]) count as success.
  */
 fun DvexTaskResult.toToolResult(): DvexToolResult {
-  val lastStep = steps.lastOrNull()
-  if (lastStep == null) {
+  val firstFailure = steps.firstOrNull { !it.second.isSuccess }
+  if (steps.isEmpty()) {
     return DvexToolResult(
       status = DvexToolStatus.FAILED,
       toolName = "agent",
@@ -273,86 +382,91 @@ fun DvexTaskResult.toToolResult(): DvexToolResult {
     )
   }
 
-  val (lastAction, lastResult) = lastStep
-  val toolName = toolNameFor(lastAction.type)
-  // Only CONFIRMED successes may be spoken as done. An unverified step is excluded
-  // so the summary can never claim something that was not observed.
+  // Only CONFIRMED successes may be spoken as done. Unverified steps are excluded so
+  // the summary can never claim something that was not observed.
   val done = steps
     .filter { it.second.isConfirmed }
     .joinToString(" and ") { pastTense(it.first) }
 
-  return when (lastResult.status) {
-    AgentActionStatus.SUCCESS -> {
-      if (lastResult.verification == VerificationOutcome.UNVERIFIED) {
-        // Dispatched, but the effect was never observed: report it as unverified
-        // and keep the handler's own honest wording ("Opening X", not "Opened X").
-        val text = lastResult.message.ifBlank { "I couldn't confirm that one." }
-        val combined = if (done.isBlank()) {
-          text
-        } else {
-          "${done.replaceFirstChar { it.uppercaseChar() }}, but ${text.replaceFirstChar { it.lowercase() }}"
-        }
-        DvexToolResult(
-          status = DvexToolStatus.UNVERIFIED,
-          toolName = toolName,
-          message = combined,
-          spokenText = combined
-        )
-      } else {
-        // pastTense yields lowercase verb phrases ("opened YouTube"); capitalise for
-        // the spoken sentence.
+  // The FIRST genuine failure is the primary outcome the response layer reports —
+  // not the last executed step, so a re-planned task still names the real cause.
+  if (firstFailure != null) {
+    val (failAction, failResult) = firstFailure
+    val toolName = toolNameFor(failAction.type)
+    return when (failResult.status) {
+      AgentActionStatus.REQUIRES_PERMISSION -> DvexToolResult(
+        status = DvexToolStatus.PERMISSION_REQUIRED,
+        toolName = toolName,
+        message = failResult.message,
+        spokenText = failResult.message
+      )
+
+      AgentActionStatus.REQUIRES_CONFIRMATION -> DvexToolResult(
+        status = DvexToolStatus.CONFIRMATION_REQUIRED,
+        toolName = toolName,
+        message = failResult.message,
+        spokenText = failResult.message,
+        requiresConfirmation = true,
+        confirmationPrompt = failResult.message,
+        pendingActionId = UUID.randomUUID().toString()
+      )
+
+      AgentActionStatus.UNSUPPORTED -> DvexToolResult(
+        status = DvexToolStatus.UNSUPPORTED,
+        toolName = toolName,
+        message = failResult.message,
+        spokenText = failResult.message
+      )
+
+      // FAILURE (and any other non-success): report the completed work plus the REAL
+      // reason it stopped, verbatim — never a canned "done".
+      else -> {
         val text = if (done.isBlank()) {
-          "Done."
+          failResult.message
         } else {
-          "Done. ${done.replaceFirstChar { it.uppercaseChar() }}."
+          "${done.replaceFirstChar { it.uppercaseChar() }}, but ${failResult.message.replaceFirstChar { it.lowercase() }}"
         }
         DvexToolResult(
-          status = DvexToolStatus.SUCCESS,
+          status = DvexToolStatus.FAILED,
           toolName = toolName,
           message = text,
           spokenText = text
         )
       }
     }
-
-    AgentActionStatus.REQUIRES_PERMISSION -> DvexToolResult(
-      status = DvexToolStatus.PERMISSION_REQUIRED,
-      toolName = toolName,
-      message = lastResult.message,
-      spokenText = lastResult.message
-    )
-
-    AgentActionStatus.REQUIRES_CONFIRMATION -> DvexToolResult(
-      status = DvexToolStatus.CONFIRMATION_REQUIRED,
-      toolName = toolName,
-      message = lastResult.message,
-      spokenText = lastResult.message,
-      requiresConfirmation = true,
-      confirmationPrompt = lastResult.message,
-      pendingActionId = UUID.randomUUID().toString()
-    )
-
-    AgentActionStatus.UNSUPPORTED -> DvexToolResult(
-      status = DvexToolStatus.UNSUPPORTED,
-      toolName = toolName,
-      message = lastResult.message,
-      spokenText = lastResult.message
-    )
-
-    AgentActionStatus.FAILURE -> {
-      val text = if (done.isBlank()) {
-        lastResult.message
-      } else {
-        "${done.replaceFirstChar { it.uppercaseChar() }}, but ${lastResult.message.replaceFirstChar { it.lowercase() }}"
-      }
-      DvexToolResult(
-        status = DvexToolStatus.FAILED,
-        toolName = toolName,
-        message = text,
-        spokenText = text
-      )
-    }
   }
+
+  // No failure: every step succeeded. An UNVERIFIED step is never promoted to success.
+  val unverified = steps.firstOrNull {
+    it.second.status == AgentActionStatus.SUCCESS &&
+      it.second.verification == VerificationOutcome.UNVERIFIED
+  }
+  if (unverified != null) {
+    val text = unverified.second.message.ifBlank { "I couldn't confirm that one." }
+    val combined = if (done.isBlank()) {
+      text
+    } else {
+      "${done.replaceFirstChar { it.uppercaseChar() }}, but ${text.replaceFirstChar { it.lowercase() }}"
+    }
+    return DvexToolResult(
+      status = DvexToolStatus.UNVERIFIED,
+      toolName = toolNameFor(unverified.first.type),
+      message = combined,
+      spokenText = combined
+    )
+  }
+
+  val text = if (done.isBlank()) {
+    "Done."
+  } else {
+    "Done. ${done.replaceFirstChar { it.uppercaseChar() }}."
+  }
+  return DvexToolResult(
+    status = DvexToolStatus.SUCCESS,
+    toolName = toolNameFor(steps.last().first.type),
+    message = text,
+    spokenText = text
+  )
 }
 
 /**
@@ -390,6 +504,21 @@ internal fun toolNameFor(type: AgentActionType): String = when (type) {
   AgentActionType.MEDIA_PAUSE -> "media_pause"
   AgentActionType.MEDIA_NEXT -> "media_next"
   AgentActionType.MEDIA_PREVIOUS -> "media_previous"
+  AgentActionType.WEB_SEARCH -> "web_search"
+  AgentActionType.SEARCH_INSTALLED_APPS -> "search_installed_apps"
+  AgentActionType.ANALYZE_CAMERA_FRAME -> "analyze_frame"
+  AgentActionType.START_LIVE_VISION -> "start_live_vision"
+  AgentActionType.STOP_LIVE_VISION -> "stop_live_vision"
+  AgentActionType.OPEN_APPS_SETTINGS -> "open_apps_settings"
+  AgentActionType.OPEN_APP_SETTINGS -> "open_app_settings"
+  AgentActionType.CLOSE_APP -> "close_app"
+  AgentActionType.FLASHLIGHT_CONTROL -> "flashlight_control"
+  AgentActionType.FLASHLIGHT_STATUS -> "flashlight_status"
+  AgentActionType.WIFI_STATUS -> "wifi_status"
+  AgentActionType.BLUETOOTH_STATUS -> "bluetooth_status"
+  AgentActionType.BATTERY_STATUS -> "battery_status"
+  AgentActionType.NETWORK_STATUS -> "network_status"
+  AgentActionType.STORAGE_STATUS -> "storage_status"
 }
 
 private fun pastTense(action: AgentAction): String = when (action.type) {

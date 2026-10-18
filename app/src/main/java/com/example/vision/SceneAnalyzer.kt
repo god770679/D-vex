@@ -1,6 +1,8 @@
 package com.example.vision
 
 import android.util.Log
+import androidx.annotation.OptIn
+import androidx.camera.core.ExperimentalGetImage
 import androidx.camera.core.ImageProxy
 import com.google.android.gms.tasks.Tasks
 import com.google.mlkit.vision.common.InputImage
@@ -55,6 +57,7 @@ class SceneAnalyzer {
    * ML Kit's own executors and are joined with [Tasks.whenAllComplete]; the
    * analyzer thread is never blocked.
    */
+  @OptIn(ExperimentalGetImage::class)
   fun analyze(imageProxy: ImageProxy, onResult: (SceneAnalysis) -> Unit) {
     val frameTimestamp = System.currentTimeMillis()
     val mediaImage = imageProxy.image
