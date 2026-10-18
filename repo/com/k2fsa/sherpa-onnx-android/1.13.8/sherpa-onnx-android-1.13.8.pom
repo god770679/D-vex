@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>com.k2fsa</groupId>
+  <artifactId>sherpa-onnx-android</artifactId>
+  <version>1.13.8</version>
+  <packaging>jar</packaging>
+  <name>sherpa-onnx Android SDK (local mirror of GitHub release v1.13.8)</name>
+  <description>Apache-2.0. Source: https://github.com/k2-fsa/sherpa-onnx/releases/tag/v1.13.8 asset sherpa-onnx-1.13.8.aar (sha256 633c24321e06b1fe79feafa03ea16cbc0f8a286641e2da3559bac91bdb13bd96)</description>
+  <licenses><license><name>Apache License Version 2.0</name><url>https://www.apache.org/licenses/LICENSE-2.0</url></license></licenses>
+</project>
