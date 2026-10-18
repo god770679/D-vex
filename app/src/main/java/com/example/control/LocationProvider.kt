@@ -149,6 +149,14 @@ class LocationProvider(private val context: Context) {
       }
       var registered = false
 
+      // Explicit permission guard (lint MissingPermission): requestSingleUpdate needs
+      // location permission and would throw SecurityException if it were revoked.
+      if (!hasPermission()) {
+        Log.w(TAG, "Location permission missing; not requesting an active fix")
+        if (cont.isActive) cont.resume(null)
+        return@suspendCancellableCoroutine
+      }
+
       // Classic requestSingleUpdate: available on every supported API level
       // (minSdk 24+) and works identically from API 24 through 36.
       try {
@@ -157,6 +165,10 @@ class LocationProvider(private val context: Context) {
           lm.requestSingleUpdate(provider, listener, Looper.getMainLooper())
           registered = true
         }
+      } catch (e: SecurityException) {
+        Log.w(TAG, "requestSingleUpdate denied: ${e.message}")
+        if (cont.isActive) cont.resume(null)
+        return@suspendCancellableCoroutine
       } catch (e: Exception) {
         Log.w(TAG, "requestSingleUpdate failed: ${e.message}")
         if (cont.isActive) cont.resume(null)

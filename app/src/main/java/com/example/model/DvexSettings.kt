@@ -11,6 +11,8 @@ data class DvexSettings(
   val wakePhrase: String = "D-VEX", // "D-VEX" or "Hey D-VEX"
   val orbSizeDp: Int = 56, // 48, 56, 64
   val voiceResponseEnabled: Boolean = true,
+  /** Opt-in Live (BiDi) conversation pipeline; off by default — STT/REST/TTS serves the turn until enabled. */
+  val liveConversationEnabled: Boolean = false,
   val accessibilityControlEnabled: Boolean = false,
   val orbPositionX: Int = 100,
   val orbPositionY: Int = 300

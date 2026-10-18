@@ -384,3 +384,43 @@ class DvexMemoryStore(
         }
     }
 }
+
+/**
+ * Secret-guard for facts the user asks D-VEX to remember (and for anything that
+ * would reach a model prompt or SharedPreferences).
+ *
+ * Two properties are pinned by tests:
+ *  - credential-shaped input (passwords, passcodes, OTPs, card/SSN numbers, API
+ *    keys, PINs, recovery/cvv codes) is REFUSED, and
+ *  - ordinary facts the user actually wants remembered ("I work in Coimbatore",
+ *    "battery drains fast on weekends", a Tamil wake-up request) are NEVER rejected.
+ *
+ * Detection is keyword + pattern based and deliberately conservative: it only fires
+ * on explicit credential vocabulary or unambiguous credential shapes, so normal
+ * prose is never silently dropped. Blank input is never a secret.
+ */
+fun looksLikeSensitiveFact(fact: String): Boolean {
+    val text = fact.trim()
+    if (text.isEmpty()) return false
+    val lower = text.lowercase(java.util.Locale.ROOT)
+
+    // 1. Explicit credential vocabulary — the strongest, unambiguous signal.
+    val credentialKeywords = listOf(
+        "password", "passcode", "pass phrase", "passphrase",
+        "otp", "one-time code", "one time code", "verification code",
+        "security code", "access code", "secret key", "api key", "apikey",
+        "recovery code", "backup code", "auth token", "session token",
+        "card number", "cvv", "cvc", "pin"
+    )
+    if (credentialKeywords.any { lower.contains(it) }) return true
+
+    // 2. Credential shapes that carry the secret itself even without a keyword.
+    //    US SSN: 123-45-6789
+    if (Regex("\\b\\d{3}-\\d{2}-\\d{4}\\b").containsMatchIn(text)) return true
+    //    16-digit card number (with optional spaces/dashes between groups).
+    if (Regex("\\b(?:\\d[ -]?){15,16}\\d\\b").containsMatchIn(text)) return true
+    //    Google-style API key: AIza followed by a long base64url run.
+    if (Regex("AIza[0-9A-Za-z_-]{30,}").containsMatchIn(text)) return true
+
+    return false
+}

@@ -17,6 +17,14 @@
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <!-- Normal permission (granted at install): required by ActivityManager.
+         killBackgroundProcesses, which backs the close-app capability. -->
+    <uses-permission android:name="android.permission.KILL_BACKGROUND_PROCESSES" />
+    <!-- D-VEX works without telephony or a camera: these permissions must not
+         imply required hardware (install stays possible on camera-less and
+         telephony-less devices, e.g. ChromeOS). -->
+    <uses-feature android:name="android.hardware.telephony" android:required="false" />
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
     <!-- Special permission: granted manually by the user via Settings > Usage access.
          Cannot be granted through a runtime dialog. -->
     <uses-permission android:name="android.permission.PACKAGE_USAGE_STATS"

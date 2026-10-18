@@ -20,6 +20,25 @@ enum class AgentActionType {
   SEND_MESSAGE,
   CREATE_REMINDER,
 
+  // --- Search + vision agent tools (extensions) ---
+  WEB_SEARCH,
+  SEARCH_INSTALLED_APPS,
+  ANALYZE_CAMERA_FRAME,
+  START_LIVE_VISION,
+  STOP_LIVE_VISION,
+
+  // --- App management + device status/control (extensions) ---
+  OPEN_APPS_SETTINGS,
+  OPEN_APP_SETTINGS,
+  CLOSE_APP,
+  FLASHLIGHT_CONTROL,
+  FLASHLIGHT_STATUS,
+  WIFI_STATUS,
+  BLUETOOTH_STATUS,
+  BATTERY_STATUS,
+  NETWORK_STATUS,
+  STORAGE_STATUS,
+
   // --- Device control layer (extensions) ---
   OPEN_NOTIFICATIONS,
   OPEN_WIFI_SETTINGS,
@@ -85,6 +104,14 @@ data class AgentAction(
  * Honest outcome of one action. [message] is the factual basis the response layer
  * speaks from — it must never claim more than actually happened.
  */
+/**
+ * Whether a failure is worth retrying at all. A [RECOVERABLE] failure (a UI element
+ * not visible yet, a transient field) is retried exactly once per step; a [TERMINAL]
+ * failure (backend refused, target not found) stops the plan immediately — retrying
+ * it would only loop. Handlers classify their own failures honestly here.
+ */
+enum class FailureClass { RECOVERABLE, TERMINAL }
+
 data class AgentActionResult(
   val status: AgentActionStatus,
   val message: String,
@@ -98,7 +125,12 @@ data class AgentActionResult(
    * explicitly instead of claiming verification they never performed.
    */
   val verification: VerificationOutcome =
-    if (verified) VerificationOutcome.VERIFIED else VerificationOutcome.UNVERIFIED
+    if (verified) VerificationOutcome.VERIFIED else VerificationOutcome.UNVERIFIED,
+  /**
+   * How to treat a FAILURE: [RECOVERABLE] is retried once, [TERMINAL] stops the plan.
+   * Defaults to TERMINAL so an unclassified failure never loops (fail-safe).
+   */
+  val failureClass: FailureClass = FailureClass.TERMINAL
 ) {
   val isSuccess: Boolean get() = status == AgentActionStatus.SUCCESS
   val needsConfirmation: Boolean get() = status == AgentActionStatus.REQUIRES_CONFIRMATION
@@ -111,7 +143,12 @@ data class AgentActionResult(
 data class DvexTaskPlan(
   val steps: List<AgentAction>,
   /** Short user-facing description of what the whole task will do. */
-  val summary: String
+  val summary: String,
+  /**
+   * True when the user has already consented to this plan (the planner/protocol set
+   * it after a confirmed step), so HIGH-risk actions execute without re-asking.
+   */
+  val confirmed: Boolean = false
 ) {
   val isEmpty: Boolean get() = steps.isEmpty()
   val stepCount: Int get() = steps.size
@@ -122,11 +159,31 @@ data class DvexTaskResult(
   val plan: DvexTaskPlan,
   val steps: List<Pair<AgentAction, AgentActionResult>>,
   val failedAtStep: Int? = null,
-  val failureReason: String = ""
+  val failureReason: String = "",
+  /** Recoverable-failure retries actually performed (each step retries at most once). */
+  val recoveryAttempts: Int = 0,
+  /** True when a bounded second pass re-planned the remaining steps after a failure. */
+  val replanned: Boolean = false,
+  /** The permission that blocked execution, when a capability was not granted. */
+  val permissionRequired: String? = null,
+  /** Why a step was unsupported (no registered handler), when that is the stop reason. */
+  val unsupportedReason: String? = null
 ) {
   val completedCount: Int get() = steps.count { it.second.isSuccess }
   val isComplete: Boolean get() = failedAtStep == null && steps.isNotEmpty() && steps.all { it.second.isSuccess }
   val firstResult: AgentActionResult? get() = steps.firstOrNull()?.second
+
+  /** Steps that actually ran and succeeded. */
+  val completedSteps: List<AgentAction> get() = steps.filter { it.second.isSuccess }.map { it.first }
+
+  /** The first step that failed (the primary failure the response layer reports). */
+  val failedStep: AgentAction? get() = steps.firstOrNull { !it.second.isSuccess }?.first
+  val failedStepResult: AgentActionResult? get() = steps.firstOrNull { !it.second.isSuccess }?.second
+  val failedVerification: VerificationOutcome? get() = failedStepResult?.verification
+
+  /** Planned steps that were never executed (after the first genuine failure). */
+  val notExecutedSteps: List<AgentAction>
+    get() = plan.steps.filter { step -> steps.none { it.first == step } }
 }
 
 /**
