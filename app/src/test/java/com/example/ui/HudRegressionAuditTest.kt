@@ -4,8 +4,11 @@ import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithText
 import androidx.test.core.app.ApplicationProvider
+import com.example.model.AiCoreState
+import com.example.model.DvexUiState
 import com.example.model.RecentAppEntry
 import com.example.model.WeatherInfo
+import com.example.ui.components.DvexTopBar
 import com.example.ui.components.RecentAppsOverlay
 import com.example.ui.components.TimePanel
 import com.example.ui.components.WeatherPanel
@@ -29,6 +32,9 @@ import java.util.Locale
  * - WeatherPanel with real data renders the real values under a LIVE FEED tag.
  * - RecentAppsOverlay renders real entries verbatim, and the permission-required
  *   state honestly — never placeholder app names.
+ * - DvexTopBar renders the live derived assistant-state label (uiState.aiState),
+ *   never the old hardcoded "SYSTEM ONLINE" in every condition (it could claim
+ *   online while wake-word detection was broken).
  */
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [36])
@@ -219,5 +225,25 @@ class HudRegressionAuditTest {
     val state = viewModel.uiState.value
     assertTrue(state.recentAppsOverlay == null)
     assertTrue(!state.recentAppsOverlayPermissionRequired)
+  }
+
+  // ---------------------------------------------------------------------------
+  // TOP BAR: derived honest status, never a hardcoded "SYSTEM ONLINE"
+  // ---------------------------------------------------------------------------
+
+  @Test
+  fun topBarShowsTheRealFaultStateInsteadOfHardcodedSystemOnline() {
+    composeTestRule.setContent { DvexTopBar(uiState = DvexUiState(aiState = AiCoreState.ERROR)) }
+
+    composeTestRule.onNodeWithText("WARNING").assertIsDisplayed()
+    composeTestRule.onNodeWithText("SYSTEM ONLINE").assertDoesNotExist()
+  }
+
+  @Test
+  fun topBarNeverClaimsSystemOnlineInAnyState() {
+    composeTestRule.setContent { DvexTopBar(uiState = DvexUiState(aiState = AiCoreState.IDLE)) }
+
+    composeTestRule.onNodeWithText("SYSTEM IDLE").assertIsDisplayed()
+    composeTestRule.onNodeWithText("SYSTEM ONLINE").assertDoesNotExist()
   }
 }

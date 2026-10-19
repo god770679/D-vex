@@ -244,11 +244,20 @@ class SherpaOnnxWakeWordDetector internal constructor(
 
         engineRef.accept(buffer, SherpaKwsTuning.SAMPLE_RATE)
         val detected = engineRef.poll()
+        if (detected != null) {
+          // RAW DETECTION (before any gate): the single most important missing
+          // device-evidence line — tells apart "the model never fired" from
+          // "the model fired but a suppression gate dropped it".
+          Log.i(TAG, "Raw wake detection from engine: \"$detected\" (frames=$framesAccepted); evaluating gates")
+        }
         if (detected != null && handleDetection()) return
       }
     } catch (t: Throwable) {
       if (running) dispatchError("Offline wake-word engine error: ${t.message ?: t.javaClass.simpleName}")
     } finally {
+      // LOOP-EXIT DIAGNOSTIC (once per capture lifetime): why listening ended and
+      // how much audio was actually processed before it did.
+      Log.i(TAG, "Capture loop exited (running=$running, frames=$framesAccepted)")
       synchronized(this) {
         running = false
         releaseCaptureLocked()
@@ -509,6 +518,13 @@ internal class AndroidMicCapture : MicCapture {
     return try {
       candidate.startRecording()
       recorder = candidate
+      // DIAGNOSTIC (rate-limited by once-per-start): proves from logcat that the
+      // wake capture actually opened, and with exactly which capture parameters.
+      Log.i(
+        TAG,
+        "Microphone started: rate=${SherpaKwsTuning.SAMPLE_RATE} Hz, channels=mono, " +
+          "encoding=PCM16, source=VOICE_RECOGNITION(6), buffer=$bufferSize bytes",
+      )
       true
     } catch (t: Throwable) {
       Log.w(TAG, "startRecording failed", t)
@@ -592,16 +608,41 @@ private class SherpaKeywordEngine(context: Context, tokenizedKeyword: String) : 
     spotter = KeywordSpotter(null, config)
     stream = spotter.createStream()
       ?: error("KeywordSpotter.createStream returned null")
+    // DIAGNOSTIC (once per engine build): the exact threshold decision surface and
+    // the token string handed to the native runtime — greppable proof from logcat
+    // of WHICH keyword was encoded and under WHICH KWS parameters it must fire.
+    // (sherpa-onnx 1.13.8 exposes keyword/tokens/timestamps but NO score, so a
+    // per-detection numeric score cannot be logged — config + outcome are.)
+    Log.i(
+      TAG,
+      "KWS config: keyword=\"$tokenizedKeyword\" " +
+        "keywords_score=${SherpaKwsTuning.KEYWORDS_SCORE} " +
+        "keywords_threshold=${SherpaKwsTuning.KEYWORDS_THRESHOLD} " +
+        "num_trailing_blanks=${SherpaKwsTuning.NUM_TRAILING_BLANKS} " +
+        "max_active_paths=${SherpaKwsTuning.MAX_ACTIVE_PATHS} " +
+        "sample_rate=${SherpaKwsTuning.SAMPLE_RATE} feature_dim=${SherpaKwsTuning.FEATURE_DIM}",
+    )
   }
 
   override fun accept(samples: FloatArray, sampleRate: Int) {
     stream?.acceptWaveform(samples, sampleRate)
   }
 
+  /** Native decode-step counter for the rate-limited inference heartbeat. */
+  private var decodeSteps = 0
+
   override fun poll(): String? {
     val s = stream ?: return null
     while (spotter.isReady(s)) {
       spotter.decode(s)
+      // INFERENCE HEARTBEAT (rate-limited to every 1000 native decode steps,
+      // ≈100 s of audio): proves from logcat that the native transducer is
+      // actually decoding streamed features — a wake engine that never decodes
+      // can never fire, and silence alone would not distinguish the two.
+      decodeSteps++
+      if (decodeSteps == 1 || decodeSteps % HEARTBEAT_EVERY_DECODES == 0) {
+        Log.i(TAG, "Inference heartbeat: decode_steps=$decodeSteps (native transducer decoding is running)")
+      }
       val result = spotter.getResult(s)
       val keywordText = result?.keyword
       if (!keywordText.isNullOrBlank()) {
@@ -616,6 +657,13 @@ private class SherpaKeywordEngine(context: Context, tokenizedKeyword: String) : 
     stream?.let { s -> try { s.release() } catch (_: Throwable) {} }
     stream = null
     try { spotter.release() } catch (_: Throwable) {}
+  }
+
+  companion object {
+    private const val TAG = "[D-VEX][WAKE][OFFLINE]"
+
+    /** Native decode-step heartbeat cadence inside [poll] (≈100 s of audio). */
+    private const val HEARTBEAT_EVERY_DECODES = 1000
   }
 }
 
