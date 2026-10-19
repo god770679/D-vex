@@ -5,6 +5,7 @@ import android.content.Intent
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
@@ -27,6 +28,9 @@ class SpeechRecognizerManager(private val context: Context) {
   private val _isListening = MutableStateFlow(false)
   val isListening: StateFlow<Boolean> = _isListening.asStateFlow()
   @Volatile private var isSessionActive = false
+
+  /** PHASE-A: T2 anchor — when this recognizer session was requested (uptime, log-only). */
+  @Volatile private var listenRequestedAtMs = 0L
 
   private val _rmsDb = MutableStateFlow(0f)
   val rmsDb: StateFlow<Float> = _rmsDb.asStateFlow()
@@ -75,6 +79,7 @@ class SpeechRecognizerManager(private val context: Context) {
     this.onResultCallback = onResult
     this.onErrorCallback = onError
     this.onPartialResultCallback = onPartialResult
+    listenRequestedAtMs = SystemClock.uptimeMillis()
 
     mainHandler.post {
       try {
@@ -118,6 +123,8 @@ class SpeechRecognizerManager(private val context: Context) {
           setRecognitionListener(object : RecognitionListener {
             override fun onReadyForSpeech(params: Bundle?) {
               Log.d(TAG, "Ready for speech input")
+              // PHASE-A (log-only): T2 part 2 — listen request to recognizer capturing audio.
+              Log.i(TAG, "LAT ready_for_speech ms=${if (listenRequestedAtMs > 0L) SystemClock.uptimeMillis() - listenRequestedAtMs else -1L}")
             }
 
             override fun onBeginningOfSpeech() {
