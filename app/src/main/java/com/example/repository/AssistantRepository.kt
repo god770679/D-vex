@@ -25,6 +25,7 @@ import com.example.voice.TextToSpeechManager
 import com.example.voice.VoiceSessionStateMachine
 import com.example.voice.VoiceSessionStateMachine.CommandEndReason
 import com.example.voice.WakeWordManager
+import com.example.voice.WakeWordState
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -38,10 +39,38 @@ import java.util.Locale
 import java.util.UUID
 
 /**
+ * STATE-HONESTY RULE for the wake-listening HUD label (wake-word diagnosis).
+ *
+ * Only [WakeWordState.Listening] and [WakeWordState.Triggered] mean the wake
+ * engine is genuinely running. Every other engine state — Disabled, Standby,
+ * Error (genuine init failure / missing mic permission), or the legacy aliases —
+ * means it is NOT running, so a HUD still claiming wake-word listening must be
+ * downgraded to Standby.
+ *
+ * Deliberately NOT downgraded to [DvexAssistantState.Error]: Standby is the state
+ * every existing re-arm path (settings toggle, session-end re-arm, orb/service
+ * start) re-arms FROM, so retry/recovery behaviour is preserved untouched.
+ *
+ * @return the honest assistant state, or null to leave [current] untouched.
+ */
+internal fun reconcileWakeHudState(
+  engine: WakeWordState,
+  current: DvexAssistantState,
+): DvexAssistantState? {
+  if (current !== DvexAssistantState.WakeWordListening) return null
+  return when (engine) {
+    WakeWordState.Listening,
+    is WakeWordState.Triggered,
+    -> null
+    else -> DvexAssistantState.Standby
+  }
+}
+
+/**
  * Central Orchestrator for the D-VEX Voice Pipeline V1.
  * Coordinates Wake Word -> Speech-to-Text -> AI / Tool Processing -> Text-to-Speech.
  */
-class AssistantRepository private constructor(private val context: Context) {
+class AssistantRepository internal constructor(private val context: Context) {
 
   private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
   private val prefs: SharedPreferences = context.getSharedPreferences("dvex_assistant_prefs", Context.MODE_PRIVATE)
@@ -112,6 +141,25 @@ class AssistantRepository private constructor(private val context: Context) {
     // Hard gate: while a voice session is active the wake detector must never fire
     // (belt-and-braces alongside the detector being stopped for the session).
     wakeWordManager.setTriggerGate { !voiceSession.isSessionActive() }
+
+    // STATE HONESTY (wake-word diagnosis): AssistantRepository and the HUD must
+    // never keep reporting wake-word listening as active while the wake engine is
+    // not actually running (genuine init failure, missing mic permission, or an
+    // external stop). Reconciliation only ever DOWNGRADES the label to Standby —
+    // every existing re-arm path (settings toggle, session-end re-arm, orb/service
+    // start) then recovers it exactly as before, so retry/recovery is preserved.
+    scope.launch {
+      wakeWordManager.state.collect { engineState ->
+        val honest = reconcileWakeHudState(engineState, _assistantState.value)
+        if (honest != null) {
+          Log.w(
+            TAG_WAKE,
+            "Wake engine not active ($engineState); HUD downgraded from wake-listening to ${honest.label}",
+          )
+          _assistantState.value = honest
+        }
+      }
+    }
   }
 
   private fun loadSettings(): DvexSettings {
@@ -702,9 +750,9 @@ class AssistantRepository private constructor(private val context: Context) {
         Log.i(TAG_VOICE, "Standby UI state set; wake re-arm deferred (session still open)")
         return
       }
-      Log.i(TAG_VOICE, "Returned to standby (passive wake-word listening re-arming)")
+      Log.i(TAG_VOICE, "Returned to standby (passive wake-word listening re-arming after delay_ms=$WAKE_REARM_DELAY_MS)")
       scope.launch {
-        delay(400)
+        delay(WAKE_REARM_DELAY_MS)
         wakeWordManager.setAudioSuppressed(false)
         if (!wakeWordManager.isRunning() && !voiceSession.isSessionActive()) {
           wakeWordManager.start()
@@ -747,6 +795,9 @@ class AssistantRepository private constructor(private val context: Context) {
     private const val TAG_TTS = "[D-VEX][TTS]"
     private const val TAG_VOICE = "[D-VEX][VOICE]"
     private const val TAG_ACTION = "[D-VEX][ACTION]"
+
+    /** Re-arm delay before passive wake-word listening restarts after a session ends. */
+    private const val WAKE_REARM_DELAY_MS = 400L
 
     @Volatile
     private var INSTANCE: AssistantRepository? = null

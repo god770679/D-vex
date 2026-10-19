@@ -144,7 +144,16 @@ class SherpaOnnxWakeWordDetector internal constructor(
         dispatchErrorLocked("Microphone permission required for wake word.")
         return
       }
-      val result = phraseValidator(keyword)
+      // GENUINE INIT FAILURE HONESTY: the validator does real asset I/O, so it
+      // can throw rather than return Invalid. A thrown exception must surface as
+      // an error dispatch (-> state accurately reflects the failure), never as a
+      // crash and never as a detector left silently not-running.
+      val result = try {
+        phraseValidator(keyword)
+      } catch (t: Throwable) {
+        dispatchErrorLocked("Wake phrase validation failed: ${t.message ?: t.javaClass.simpleName}")
+        return
+      }
       if (result is WakePhraseTokenizer.Result.Invalid) {
         dispatchErrorLocked("Wake phrase \"$keyword\" is unusable: ${result.reason}")
         return
@@ -169,7 +178,17 @@ class SherpaOnnxWakeWordDetector internal constructor(
       "Offline wake engine initialized in ${System.currentTimeMillis() - initStartMs} ms " +
         "(includes first-run model copy to filesDir)",
     )
-    val newMic = micFactory.create()
+    // The microphone factory constructs the platform AudioRecord, which can
+    // throw on some devices. Same honesty rule: report the failure through the
+    // error path with the engine cleaned up — never crash, never leak the engine
+    // that was just created.
+    val newMic = try {
+      micFactory.create()
+    } catch (t: Throwable) {
+      try { newEngine.close() } catch (_: Throwable) {}
+      dispatchErrorLocked("Microphone capture could not be created: ${t.message ?: t.javaClass.simpleName}")
+      return
+    }
     if (!newMic.start()) {
       try { newMic.stopAndRelease() } catch (_: Throwable) {}
       try { newEngine.close() } catch (_: Throwable) {}
