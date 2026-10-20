@@ -21,7 +21,13 @@ class DvexAgentEnvironment(
   val deviceControl: DeviceControlRepository,
   val toolRouter: DvexToolRouter,
   /** Optional on-demand contextual awareness (advisory only). Null = same as before. */
-  val dvexContextProvider: DvexContextProvider? = null
+  val dvexContextProvider: DvexContextProvider? = null,
+  /**
+   * Camera-vision capability for the camera action handlers (analyze_frame,
+   * start/stop live vision). Null when no vision stack is wired — handlers then fail
+   * honestly instead of pretending a camera exists.
+   */
+  val vision: com.example.vision.VisionOperations? = null
 )
 
 /** One action type → one handler. Adding a capability means adding a handler here. */

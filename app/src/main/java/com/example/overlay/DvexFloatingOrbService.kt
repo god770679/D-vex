@@ -75,6 +75,7 @@ import com.example.MainActivity
 import com.example.R
 import com.example.agent.AgentState
 import com.example.agent.DvexAgentStateController
+import com.example.brain.DvexToolStatus
 import com.example.model.DvexAssistantState
 import com.example.model.OrbDisplayState
 import com.example.model.OrbDisplayStateMapper
@@ -136,9 +137,10 @@ open class DvexFloatingOrbService : Service() {
     stateObserverJob = serviceScope.launch {
       combine(
         assistantRepo.assistantState,
-        DvexAgentStateController.state
-      ) { voiceState, agentState ->
-        OrbDisplayStateMapper.map(agentState, voiceState)
+        DvexAgentStateController.state,
+        assistantRepo.lastToolOutcome
+      ) { voiceState, agentState, toolOutcome ->
+        OrbDisplayStateMapper.map(agentState, voiceState, toolOutcome)
       }.collectLatest { displayState ->
         updateNotification(displayState)
       }
@@ -172,7 +174,8 @@ open class DvexFloatingOrbService : Service() {
     val notification = buildNotification(
       OrbDisplayStateMapper.map(
         DvexAgentStateController.state.value,
-        assistantRepo.assistantState.value
+        assistantRepo.assistantState.value,
+        assistantRepo.lastToolOutcome.value
       )
     )
     try {
@@ -219,6 +222,9 @@ open class DvexFloatingOrbService : Service() {
       OrbDisplayState.SPEAKING -> "Transmitting Response"
       OrbDisplayState.ERROR -> "Alert: Attention Required"
       OrbDisplayState.CONFIRM -> "Confirmation Required • CONFIRM?"
+      OrbDisplayState.SUCCESS -> "Action Verified • Success"
+      OrbDisplayState.BLOCKED -> "Blocked • Permission Required"
+      OrbDisplayState.UNVERIFIED -> "Dispatched • Result Unverified"
     }
 
     return NotificationCompat.Builder(this, CHANNEL_ID_ORB)
@@ -294,10 +300,13 @@ open class DvexFloatingOrbService : Service() {
         val agentState by DvexAgentStateController.state.collectAsState()
         val latestResponse by assistantRepo.latestResponse.collectAsState()
         val currentSettings by assistantRepo.settings.collectAsState()
+        // PHASE-B: honest outcome of the last turn — projected read-only by the mapper.
+        val toolOutcome by assistantRepo.lastToolOutcome.collectAsState()
 
         OrbFloatingContainer(
           assistantState = assistantState,
           agentState = agentState,
+          toolOutcome = toolOutcome,
           latestResponse = latestResponse,
           orbSize = currentSettings.orbSizeDp.dp
         )
@@ -494,16 +503,18 @@ open class DvexFloatingOrbService : Service() {
 private fun OrbFloatingContainer(
   assistantState: DvexAssistantState,
   agentState: AgentState,
+  toolOutcome: DvexToolStatus?,
   latestResponse: String,
   orbSize: Dp
 ) {
   var isBubbleVisible by remember { mutableStateOf(false) }
   var currentBubbleText by remember { mutableStateOf("💬 Standby") }
 
-  LaunchedEffect(assistantState, agentState, latestResponse) {
-    // Pure projection of the two REAL state sources. No state is shown unless
-    // its underlying flow actually transitioned — no fake progress, ever.
-    val displayState = OrbDisplayStateMapper.map(agentState, assistantState)
+  LaunchedEffect(assistantState, agentState, toolOutcome, latestResponse) {
+    // Pure projection of the REAL state sources (voice, agent bus, honest tool
+    // outcome). No state is shown unless its underlying flow actually transitioned
+    // — no fake progress, ever.
+    val displayState = OrbDisplayStateMapper.map(agentState, assistantState, toolOutcome)
 
     val text = when (displayState) {
       OrbDisplayState.IDLE -> when (assistantState) {
@@ -519,11 +530,18 @@ private fun OrbFloatingContainer(
       OrbDisplayState.SPEAKING -> "💬 SPEAKING"
       OrbDisplayState.ERROR -> "💬 ERROR"
       OrbDisplayState.CONFIRM -> "💬 CONFIRM?"
+      OrbDisplayState.SUCCESS -> "💬 SUCCESS"
+      OrbDisplayState.BLOCKED -> "💬 BLOCKED"
+      OrbDisplayState.UNVERIFIED -> "💬 UNVERIFIED"
     }
     currentBubbleText = text
 
     when (displayState) {
-      OrbDisplayState.IDLE -> {
+      // Settled outcomes show briefly then fade (same cadence as IDLE); BLOCKED
+      // deliberately stays visible — work is paused until the user grants access.
+      OrbDisplayState.IDLE,
+      OrbDisplayState.SUCCESS,
+      OrbDisplayState.UNVERIFIED -> {
         // Show status briefly (e.g. "💬 Idle"), then fade out after 3.5 seconds
         isBubbleVisible = true
         delay(3500)

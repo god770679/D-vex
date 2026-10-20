@@ -1,6 +1,7 @@
 package com.example.model
 
 import com.example.agent.AgentState
+import com.example.brain.DvexToolStatus
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -17,8 +18,11 @@ import org.junit.Test
  */
 class OrbDisplayStateTest {
 
-  private fun map(agent: AgentState, voice: DvexAssistantState): OrbDisplayState =
-    OrbDisplayStateMapper.map(agent, voice)
+  private fun map(
+    agent: AgentState,
+    voice: DvexAssistantState,
+    toolOutcome: DvexToolStatus? = null
+  ): OrbDisplayState = OrbDisplayStateMapper.map(agent, voice, toolOutcome)
 
   // ---------------------------------------------------------------- IDLE
 
@@ -245,6 +249,107 @@ class OrbDisplayStateTest {
         expectedState,
         map(inputs.first, inputs.second)
       )
+    }
+  }
+
+  // ------------------------------------------- PHASE-B OUTCOME PROJECTION
+
+  @Test
+  fun outcomePermissionRequired_mapsToBlocked_andOutranksError() {
+    // The voice layer reports a missing permission through an Error state
+    // ("Permission required"); the honest display is BLOCKED, not ERROR.
+    assertEquals(
+      OrbDisplayState.BLOCKED,
+      map(AgentState.IDLE, DvexAssistantState.Error("Permission required"), DvexToolStatus.PERMISSION_REQUIRED)
+    )
+    assertEquals(
+      OrbDisplayState.BLOCKED,
+      map(AgentState.IDLE, DvexAssistantState.Standby, DvexToolStatus.PERMISSION_REQUIRED)
+    )
+    assertEquals("BLOCKED", OrbDisplayState.BLOCKED.label)
+  }
+
+  @Test
+  fun realError_isNeverMaskedByAStaleSuccessOutcome() {
+    assertEquals(
+      OrbDisplayState.ERROR,
+      map(AgentState.ERROR, DvexAssistantState.Standby, DvexToolStatus.SUCCESS)
+    )
+    assertEquals(
+      OrbDisplayState.ERROR,
+      map(AgentState.IDLE, DvexAssistantState.Error("boom"), DvexToolStatus.SUCCESS)
+    )
+  }
+
+  @Test
+  fun outcomeConfirmationRequired_mapsToConfirmWithoutTheAgentBus() {
+    // REST-pipeline confirmations never transition the agent bus; the outcome
+    // input is what makes the honest CONFIRM? state visible for them.
+    assertEquals(
+      OrbDisplayState.CONFIRM,
+      map(AgentState.IDLE, DvexAssistantState.Standby, DvexToolStatus.CONFIRMATION_REQUIRED)
+    )
+    assertEquals(
+      OrbDisplayState.CONFIRM,
+      map(AgentState.IDLE, DvexAssistantState.Speaking("Shall I?"), DvexToolStatus.CONFIRMATION_REQUIRED)
+    )
+  }
+
+  @Test
+  fun settledOutcomeSuccess_showsOnlyWhenNothingIsActive() {
+    assertEquals(
+      OrbDisplayState.SUCCESS,
+      map(AgentState.IDLE, DvexAssistantState.Standby, DvexToolStatus.SUCCESS)
+    )
+    // Active real states always outrank a settled outcome.
+    assertEquals(
+      OrbDisplayState.LISTENING,
+      map(AgentState.IDLE, DvexAssistantState.Listening, DvexToolStatus.SUCCESS)
+    )
+    assertEquals(
+      OrbDisplayState.SPEAKING,
+      map(AgentState.IDLE, DvexAssistantState.Speaking("done"), DvexToolStatus.SUCCESS)
+    )
+    assertEquals(
+      OrbDisplayState.EXECUTING,
+      map(AgentState.EXECUTING, DvexAssistantState.Standby, DvexToolStatus.SUCCESS)
+    )
+    assertEquals(
+      OrbDisplayState.THINKING,
+      map(AgentState.IDLE, DvexAssistantState.Processing, DvexToolStatus.SUCCESS)
+    )
+    assertEquals("SUCCESS", OrbDisplayState.SUCCESS.label)
+  }
+
+  @Test
+  fun settledOutcomeUnverified_isNeverPromotedToSuccess() {
+    assertEquals(
+      OrbDisplayState.UNVERIFIED,
+      map(AgentState.IDLE, DvexAssistantState.Standby, DvexToolStatus.UNVERIFIED)
+    )
+    assertEquals("UNVERIFIED", OrbDisplayState.UNVERIFIED.label)
+  }
+
+  @Test
+  fun defaultOutcomeInput_keepsEveryExistingTwoArgMappingIdentical() {
+    val voices = listOf<DvexAssistantState>(
+      DvexAssistantState.Idle,
+      DvexAssistantState.Standby,
+      DvexAssistantState.WakeWordListening,
+      DvexAssistantState.Listening,
+      DvexAssistantState.Processing,
+      DvexAssistantState.ExecutingAction("open_app"),
+      DvexAssistantState.Speaking("ok"),
+      DvexAssistantState.Error("boom")
+    )
+    AgentState.entries.forEach { agent ->
+      voices.forEach { voice ->
+        assertEquals(
+          "null outcome must behave exactly like the pre-Phase-B mapper for $agent × $voice",
+          map(agent, voice),
+          OrbDisplayStateMapper.map(agent, voice, null)
+        )
+      }
     }
   }
 }

@@ -233,6 +233,12 @@ object DvexToolProtocol {
         query = argument("text")
       )
       AgentActionType.CLEAR_TEXT -> action(tool, target = argument("field"))
+      AgentActionType.WEB_SEARCH -> action(tool, query = argument("query"))
+      AgentActionType.SEARCH_INSTALLED_APPS -> action(tool, query = argument("query"))
+      AgentActionType.ANALYZE_CAMERA_FRAME -> action(tool, query = argument("question"))
+      AgentActionType.OPEN_APP_SETTINGS -> action(tool, target = argument("app_name"))
+      AgentActionType.CLOSE_APP -> action(tool, target = argument("app_name"))
+      AgentActionType.FLASHLIGHT_CONTROL -> action(tool, query = argument("state"))
       // Actions with no inputs: nothing but the descriptor decides what runs.
       AgentActionType.NAVIGATE_HOME,
       AgentActionType.NAVIGATE_BACK,
@@ -253,7 +259,16 @@ object DvexToolProtocol {
       AgentActionType.MEDIA_NEXT,
       AgentActionType.MEDIA_PREVIOUS,
       AgentActionType.VOLUME_UP,
-      AgentActionType.VOLUME_DOWN -> action(tool)
+      AgentActionType.VOLUME_DOWN,
+      AgentActionType.START_LIVE_VISION,
+      AgentActionType.STOP_LIVE_VISION,
+      AgentActionType.OPEN_APPS_SETTINGS,
+      AgentActionType.FLASHLIGHT_STATUS,
+      AgentActionType.WIFI_STATUS,
+      AgentActionType.BLUETOOTH_STATUS,
+      AgentActionType.BATTERY_STATUS,
+      AgentActionType.NETWORK_STATUS,
+      AgentActionType.STORAGE_STATUS -> action(tool)
     }
   }
 

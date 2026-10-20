@@ -162,4 +162,26 @@ class OrbServiceWiringRegressionTest {
         .all { mapper.contains(it) }
     )
   }
+
+  @Test
+  fun orbProjectsTheHonestToolOutcomeThroughTheExistingMapper() {
+    // PHASE-B: the three settled-outcome states must be fed through the ONE
+    // existing pure mapper — never a second state holder in the service.
+    assertTrue(
+      "Orb must observe assistantRepo.lastToolOutcome",
+      orbService.contains("assistantRepo.lastToolOutcome")
+    )
+    assertTrue(
+      "Orb must feed the outcome into the EXISTING mapper call",
+      orbService.contains("map(agentState, voiceState, toolOutcome)")
+    )
+    assertTrue(
+      "Orb bubble must collect the outcome flow",
+      orbService.contains("toolOutcome = toolOutcome")
+    )
+    listOf("SUCCESS", "BLOCKED", "UNVERIFIED").forEach { state ->
+      assertTrue("mapper must expose $state", mapper.contains(state))
+      assertTrue("orb service must render OrbDisplayState.$state", orbService.contains("OrbDisplayState.$state"))
+    }
+  }
 }

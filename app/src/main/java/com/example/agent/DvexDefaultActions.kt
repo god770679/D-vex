@@ -6,6 +6,8 @@ import com.example.brain.ScrollDirection
 import com.example.brain.SystemSettingsKind
 import com.example.brain.VolumeAction
 import com.example.control.DvexAccessibilityService
+import com.example.vision.LiveVisionStart
+import com.example.ai.VisionAnalysis
 import java.util.Locale
 
 /**
@@ -66,7 +68,11 @@ object DvexDefaultActions {
     TapElementHandler(),
     TypeTextHandler(),
     ClearTextHandler(),
-    SubmitTextHandler()
+    SubmitTextHandler(),
+    // --- Camera vision (Phase 5): gated on the injected VisionOperations seam ---
+    AnalyzeCameraFrameHandler(),
+    StartLiveVisionHandler(),
+    StopLiveVisionHandler()
   )
 }
 
@@ -426,6 +432,95 @@ class SubmitTextHandler : AgentActionHandler {
       AgentActionResult(
         AgentActionStatus.FAILURE,
         "I couldn't find a search button to submit."
+      )
+    }
+  }
+}
+
+/**
+ * ANALYZE_CAMERA_FRAME — captures one real frame via the injected [com.example.vision.VisionOperations]
+ * seam and reports the vision model's own words verbatim (never a fabricated description).
+ * With no vision wired, it fails honestly instead of pretending a camera exists.
+ */
+class AnalyzeCameraFrameHandler : AgentActionHandler {
+  override val actionType = AgentActionType.ANALYZE_CAMERA_FRAME
+
+  override suspend fun execute(action: AgentAction, env: DvexAgentEnvironment): AgentActionResult {
+    val vision = env.vision ?: return AgentActionResult(
+      AgentActionStatus.FAILURE,
+      "Vision isn't wired in this session — I can't analyze a camera frame right now."
+    )
+    val question = action.query.ifBlank {
+      "Describe what is visible in this image in one or two sentences."
+    }
+    val analysis: VisionAnalysis = vision.captureAndAnalyze(question)
+    return if (analysis.isSuccess) {
+      // The payload IS the observation: the model's own answer, passed through.
+      AgentActionResult(
+        AgentActionStatus.SUCCESS,
+        analysis.text.orEmpty(),
+        verification = VerificationOutcome.VERIFIED
+      )
+    } else {
+      // A failed analysis is reported as that failure — never as a description.
+      AgentActionResult(
+        AgentActionStatus.FAILURE,
+        analysis.error ?: "The frame could not be analyzed."
+      )
+    }
+  }
+}
+
+/** START_LIVE_VISION — starts the opt-in continuous-vision loop; HIGH risk (confirmed by the gate). */
+class StartLiveVisionHandler : AgentActionHandler {
+  override val actionType = AgentActionType.START_LIVE_VISION
+
+  override suspend fun execute(action: AgentAction, env: DvexAgentEnvironment): AgentActionResult {
+    val vision = env.vision ?: return AgentActionResult(
+      AgentActionStatus.FAILURE,
+      "Continuous vision isn't wired in this session — no camera stack is available."
+    )
+    return when (vision.startLiveVision()) {
+      LiveVisionStart.STARTED -> AgentActionResult(
+        AgentActionStatus.SUCCESS,
+        "Continuous vision started.",
+        verification = VerificationOutcome.DISPATCH_CONFIRMED
+      )
+      LiveVisionStart.ALREADY_RUNNING -> AgentActionResult(
+        AgentActionStatus.SUCCESS,
+        "Continuous vision is already running.",
+        verification = VerificationOutcome.DISPATCH_CONFIRMED
+      )
+      LiveVisionStart.CAMERA_INACTIVE -> AgentActionResult(
+        AgentActionStatus.FAILURE,
+        "The camera isn't running, so continuous vision can't start. Open the camera panel first."
+      )
+    }
+  }
+}
+
+/** STOP_LIVE_VISION — stops the loop; always safe, honest about "wasn't running". */
+class StopLiveVisionHandler : AgentActionHandler {
+  override val actionType = AgentActionType.STOP_LIVE_VISION
+
+  override suspend fun execute(action: AgentAction, env: DvexAgentEnvironment): AgentActionResult {
+    val vision = env.vision ?: return AgentActionResult(
+      AgentActionStatus.FAILURE,
+      "Continuous vision isn't wired in this session, so there is no camera loop to stop."
+    )
+    val stopped = vision.stopLiveVision()
+    return if (stopped) {
+      AgentActionResult(
+        AgentActionStatus.SUCCESS,
+        "Continuous vision stopped.",
+        verification = VerificationOutcome.DISPATCH_CONFIRMED
+      )
+    } else {
+      // Stopping an idle loop is a safe, honest success — nothing to stop.
+      AgentActionResult(
+        AgentActionStatus.SUCCESS,
+        "Continuous vision wasn't running, so there was nothing to stop.",
+        verification = VerificationOutcome.DISPATCH_CONFIRMED
       )
     }
   }

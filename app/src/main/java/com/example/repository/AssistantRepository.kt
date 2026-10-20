@@ -3,6 +3,7 @@ package com.example.repository
 import android.content.Context
 import android.content.SharedPreferences
 import android.os.Build
+import android.os.SystemClock
 import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
@@ -18,10 +19,13 @@ import com.example.model.DvexAssistantState
 import com.example.model.DvexSettings
 import com.example.permissions.DvexPermissionManager
 import com.example.voice.SpeechRecognizerManager
+import com.example.voice.DvexWakePhraseValidator
+import com.example.voice.WakePhraseTokenizer
 import com.example.voice.TextToSpeechManager
 import com.example.voice.VoiceSessionStateMachine
 import com.example.voice.VoiceSessionStateMachine.CommandEndReason
 import com.example.voice.WakeWordManager
+import com.example.voice.WakeWordState
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -35,10 +39,38 @@ import java.util.Locale
 import java.util.UUID
 
 /**
+ * STATE-HONESTY RULE for the wake-listening HUD label (wake-word diagnosis).
+ *
+ * Only [WakeWordState.Listening] and [WakeWordState.Triggered] mean the wake
+ * engine is genuinely running. Every other engine state — Disabled, Standby,
+ * Error (genuine init failure / missing mic permission), or the legacy aliases —
+ * means it is NOT running, so a HUD still claiming wake-word listening must be
+ * downgraded to Standby.
+ *
+ * Deliberately NOT downgraded to [DvexAssistantState.Error]: Standby is the state
+ * every existing re-arm path (settings toggle, session-end re-arm, orb/service
+ * start) re-arms FROM, so retry/recovery behaviour is preserved untouched.
+ *
+ * @return the honest assistant state, or null to leave [current] untouched.
+ */
+internal fun reconcileWakeHudState(
+  engine: WakeWordState,
+  current: DvexAssistantState,
+): DvexAssistantState? {
+  if (current !== DvexAssistantState.WakeWordListening) return null
+  return when (engine) {
+    WakeWordState.Listening,
+    is WakeWordState.Triggered,
+    -> null
+    else -> DvexAssistantState.Standby
+  }
+}
+
+/**
  * Central Orchestrator for the D-VEX Voice Pipeline V1.
  * Coordinates Wake Word -> Speech-to-Text -> AI / Tool Processing -> Text-to-Speech.
  */
-class AssistantRepository private constructor(private val context: Context) {
+class AssistantRepository internal constructor(private val context: Context) {
 
   private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
   private val prefs: SharedPreferences = context.getSharedPreferences("dvex_assistant_prefs", Context.MODE_PRIVATE)
@@ -69,6 +101,16 @@ class AssistantRepository private constructor(private val context: Context) {
   val pendingConfirmation: StateFlow<PendingConfirmation?> = _pendingConfirmation.asStateFlow()
 
   /**
+   * PHASE-B: honest outcome of the most recent tool turn, projected read-only by
+   * the floating Orb (OrbDisplayStateMapper). Mirrors exactly what the brain
+   * reported — SUCCESS / UNVERIFIED / PERMISSION_REQUIRED / CONFIRMATION_REQUIRED,
+   * or null (no turn yet, a failed/unsupported turn, or a new turn starting).
+   * Cleared when a new turn begins so a stale outcome can never mask a later state.
+   */
+  private val _lastToolOutcome = MutableStateFlow<DvexToolStatus?>(null)
+  val lastToolOutcome: StateFlow<DvexToolStatus?> = _lastToolOutcome.asStateFlow()
+
+  /**
    * Voice session lifecycle (wake -> command -> standby) with duplicate protection.
    * Exactly one wake session and one command listen window may exist at a time;
    * wake-word detection resumes only after the command session fully ends.
@@ -77,6 +119,15 @@ class AssistantRepository private constructor(private val context: Context) {
 
   /** Timestamp of the last spoken wake-confirmation, used to bound echo suppression. */
   @Volatile private var lastConfirmationSpokenAtMs = 0L
+
+  // PHASE-A LATENCY INSTRUMENTATION — log-only anchors (pinned by
+  // LatencyInstrumentationGuardTest). Monotonic uptime so wall-clock jumps can
+  // never corrupt a delta; these fields feed log lines and nothing else.
+  /** Wake trigger accepted (T1/T2 origin). 0 = no wake-initiated session open. */
+  @Volatile private var wakeTriggerAtMs = 0L
+
+  /** End of the user's turn (recognizer result, or the wake trigger when attached). 0 = none. */
+  @Volatile private var turnStartAtMs = 0L
 
   // Watchdog job to ensure the UI is NEVER stuck in LISTENING or PROCESSING
   private var stateWatchdogJob: Job? = null
@@ -90,6 +141,25 @@ class AssistantRepository private constructor(private val context: Context) {
     // Hard gate: while a voice session is active the wake detector must never fire
     // (belt-and-braces alongside the detector being stopped for the session).
     wakeWordManager.setTriggerGate { !voiceSession.isSessionActive() }
+
+    // STATE HONESTY (wake-word diagnosis): AssistantRepository and the HUD must
+    // never keep reporting wake-word listening as active while the wake engine is
+    // not actually running (genuine init failure, missing mic permission, or an
+    // external stop). Reconciliation only ever DOWNGRADES the label to Standby —
+    // every existing re-arm path (settings toggle, session-end re-arm, orb/service
+    // start) then recovers it exactly as before, so retry/recovery is preserved.
+    scope.launch {
+      wakeWordManager.state.collect { engineState ->
+        val honest = reconcileWakeHudState(engineState, _assistantState.value)
+        if (honest != null) {
+          Log.w(
+            TAG_WAKE,
+            "Wake engine not active ($engineState); HUD downgraded from wake-listening to ${honest.label}",
+          )
+          _assistantState.value = honest
+        }
+      }
+    }
   }
 
   private fun loadSettings(): DvexSettings {
@@ -108,24 +178,38 @@ class AssistantRepository private constructor(private val context: Context) {
   }
 
   fun updateSettings(newSettings: DvexSettings) {
-    _settings.value = newSettings
+    // Validate the wake phrase BEFORE persisting (offline tokenizer is the source of
+    // truth). An invalid phrase is ignored rather than stored, so a bad value can
+    // never reach the offline sherpa-onnx keyword engine.
+    val phraseResult = DvexWakePhraseValidator.validate(context, newSettings.wakePhrase)
+    val effectiveSettings = if (phraseResult is WakePhraseTokenizer.Result.Invalid) {
+      Log.w(
+        TAG_WAKE,
+        "Ignoring invalid wake phrase \"${newSettings.wakePhrase}\": ${phraseResult.reason}"
+      )
+      newSettings.copy(wakePhrase = _settings.value.wakePhrase)
+    } else {
+      newSettings
+    }
+
+    _settings.value = effectiveSettings
     prefs.edit()
-      .putBoolean("always_ready", newSettings.alwaysReadyEnabled)
-      .putBoolean("floating_orb", newSettings.floatingOrbEnabled)
-      .putBoolean("wake_word", newSettings.wakeWordEnabled)
-      .putString("wake_word_keyword", newSettings.wakePhrase)
-      .putString("wake_phrase", newSettings.wakePhrase)
-      .putInt("orb_size_dp", newSettings.orbSizeDp)
-      .putBoolean("voice_response", newSettings.voiceResponseEnabled)
-      .putBoolean("accessibility_control", newSettings.accessibilityControlEnabled)
-      .putInt("orb_x", newSettings.orbPositionX)
-      .putInt("orb_y", newSettings.orbPositionY)
+      .putBoolean("always_ready", effectiveSettings.alwaysReadyEnabled)
+      .putBoolean("floating_orb", effectiveSettings.floatingOrbEnabled)
+      .putBoolean("wake_word", effectiveSettings.wakeWordEnabled)
+      .putString("wake_word_keyword", effectiveSettings.wakePhrase)
+      .putString("wake_phrase", effectiveSettings.wakePhrase)
+      .putInt("orb_size_dp", effectiveSettings.orbSizeDp)
+      .putBoolean("voice_response", effectiveSettings.voiceResponseEnabled)
+      .putBoolean("accessibility_control", effectiveSettings.accessibilityControlEnabled)
+      .putInt("orb_x", effectiveSettings.orbPositionX)
+      .putInt("orb_y", effectiveSettings.orbPositionY)
       .apply()
 
-    wakeWordManager.updateKeyword(newSettings.wakePhrase)
+    wakeWordManager.updateKeyword(effectiveSettings.wakePhrase)
 
     // Coordinate wake-word listener
-    if (newSettings.wakeWordEnabled && DvexPermissionManager.hasAudioPermission(context)) {
+    if (effectiveSettings.wakeWordEnabled && DvexPermissionManager.hasAudioPermission(context)) {
       if (_assistantState.value is DvexAssistantState.Idle || _assistantState.value is DvexAssistantState.Standby) {
         startWakeWordListening()
       }
@@ -197,6 +281,15 @@ class AssistantRepository private constructor(private val context: Context) {
         return@launch
       }
       Log.i(TAG_WAKE, "Wake session $sessionId created for: \"$detectedPhrase\"")
+      // PHASE-A (log-only): T1 anchor — wake trigger accepted by the session machine.
+      // For an ATTACHED command the user's turn ends at the trigger; a real
+      // end-of-turn overwrites turnStartAtMs in the recognizer result callback.
+      wakeTriggerAtMs = SystemClock.uptimeMillis()
+      turnStartAtMs = wakeTriggerAtMs
+      // PHASE-B: a new turn starts — the previous turn's settled outcome must not
+      // linger into this one (BLOCKED/CONFIRM outrank live states in the mapper).
+      _lastToolOutcome.value = null
+      Log.i(TAG_WAKE, "LAT wake_trigger ms=$wakeTriggerAtMs")
 
       // Audio safety: Stop wake word detector before starting command recognition
       wakeWordManager.stop()
@@ -210,6 +303,7 @@ class AssistantRepository private constructor(private val context: Context) {
       _assistantState.value = DvexAssistantState.Listening
       _latestTranscript.value = ""
       lastConfirmationSpokenAtMs = System.currentTimeMillis()
+      Log.i(TAG_VOICE, "LAT wake_trigger_to_listening ms=${SystemClock.uptimeMillis() - wakeTriggerAtMs}")
 
       // Check if user already spoke an attached command in the same sentence (e.g. "D-VEX open youtube")
       val attachedCommand = extractAttachedCommand(detectedPhrase)
@@ -309,6 +403,9 @@ class AssistantRepository private constructor(private val context: Context) {
     // Arm 10-second watchdog so listening never hangs indefinitely
     armStateWatchdog(10000, "Listening timeout")
 
+    // PHASE-A (log-only): T2 part 1 — wake trigger to command-listen request
+    // (-1 when this window was started manually, not by a wake trigger).
+    Log.i(TAG_VOICE, "LAT listen_requested since_wake_ms=${if (wakeTriggerAtMs > 0L) SystemClock.uptimeMillis() - wakeTriggerAtMs else -1L}")
     speechRecognizer.startListening(
       onResult = { recognizedText ->
         cancelStateWatchdog()
@@ -318,6 +415,9 @@ class AssistantRepository private constructor(private val context: Context) {
           endCommandSession(CommandEndReason.SILENCE)
           return@startListening
         }
+        // PHASE-A (log-only): T3 anchor — end of user turn accepted by the pipeline.
+        turnStartAtMs = SystemClock.uptimeMillis()
+        Log.i(TAG_STT, "LAT end_of_turn ms=$turnStartAtMs")
 
         val norm = clean.lowercase(Locale.ROOT)
         // Self-echo of the wake confirmation: treated as "no command" ONLY within the
@@ -418,6 +518,12 @@ class AssistantRepository private constructor(private val context: Context) {
       }
     }
     voiceSession.markCommandProcessing()
+    // PHASE-B: a new turn begins — clear the previous turn's settled outcome.
+    _lastToolOutcome.value = null
+    // PHASE-A (log-only): latency from end-of-turn (or wake trigger when the
+    // command was attached) to brain processing; typed input starts its turn here.
+    if (turnStartAtMs == 0L) turnStartAtMs = SystemClock.uptimeMillis()
+    Log.i(TAG_AI, "LAT command_processing since_turn_start_ms=${SystemClock.uptimeMillis() - turnStartAtMs}")
     scope.launch {
       cancelStateWatchdog()
       _assistantState.value = DvexAssistantState.Processing
@@ -434,6 +540,17 @@ class AssistantRepository private constructor(private val context: Context) {
       cancelStateWatchdog()
 
       val toolResult = brainResult.toolResult
+      // PHASE-B: publish the honest outcome of this turn for the Orb projection
+      // (OrbDisplayStateMapper). FAILED / NOT_FOUND / UNSUPPORTED / ERROR are
+      // intentionally null: those turns already surface through the real
+      // DvexAssistantState.Error branch below and must not be relabelled.
+      _lastToolOutcome.value = when (toolResult.status) {
+        DvexToolStatus.SUCCESS,
+        DvexToolStatus.UNVERIFIED,
+        DvexToolStatus.PERMISSION_REQUIRED,
+        DvexToolStatus.CONFIRMATION_REQUIRED -> toolResult.status
+        else -> null
+      }
       if (toolResult.status != DvexToolStatus.CONFIRMATION_REQUIRED) {
         _pendingConfirmation.value = null
       }
@@ -508,12 +625,20 @@ class AssistantRepository private constructor(private val context: Context) {
     scope.launch {
       _assistantState.value = DvexAssistantState.ExecutingAction(pending.actionTitle)
       val result = pending.onConfirm()
+      // PHASE-B: publish the confirmed execution's REAL outcome (never upgraded).
+      _lastToolOutcome.value = when (result.status) {
+        ToolResultStatus.SUCCESS -> DvexToolStatus.SUCCESS
+        ToolResultStatus.NEEDS_PERMISSION -> DvexToolStatus.PERMISSION_REQUIRED
+        else -> null
+      }
       respondWith(result.message)
     }
   }
 
   fun cancelPendingAction() {
     _pendingConfirmation.value = null
+    // PHASE-B: cancelled means nothing executed — no outcome to project.
+    _lastToolOutcome.value = null
     smartBrain.cancelPendingConfirmation()
     respondWith("Action cancelled.")
   }
@@ -534,6 +659,8 @@ class AssistantRepository private constructor(private val context: Context) {
     wakeWordManager.setRecentTtsUtterance(text)
 
     if (_settings.value.voiceResponseEnabled) {
+      // PHASE-A (log-only): T3 — end of user turn to first audible response.
+      Log.i(TAG_TTS, "LAT end_of_turn_to_speak ms=${if (turnStartAtMs > 0L) SystemClock.uptimeMillis() - turnStartAtMs else -1L}")
       val langCode = language?.name?.lowercase(Locale.ROOT)
       ttsManager.speak(text, langCode, tone?.name) {
         Log.i(TAG_VOICE, "TTS finished; checking confirmation or returning to rest")
@@ -611,6 +738,10 @@ class AssistantRepository private constructor(private val context: Context) {
 
   fun returnToRestState() {
     cancelStateWatchdog()
+    // PHASE-A (log-only): session over — latency anchors reset so a stale delta
+    // can never be attributed to a later, unrelated turn.
+    wakeTriggerAtMs = 0L
+    turnStartAtMs = 0L
     _assistantState.value = DvexAssistantState.Standby
     if (_settings.value.wakeWordEnabled && DvexPermissionManager.hasAudioPermission(context)) {
       // Defer wake re-arm ONLY while a wake/command session is genuinely mid-flight;
@@ -619,9 +750,9 @@ class AssistantRepository private constructor(private val context: Context) {
         Log.i(TAG_VOICE, "Standby UI state set; wake re-arm deferred (session still open)")
         return
       }
-      Log.i(TAG_VOICE, "Returned to standby (passive wake-word listening re-arming)")
+      Log.i(TAG_VOICE, "Returned to standby (passive wake-word listening re-arming after delay_ms=$WAKE_REARM_DELAY_MS)")
       scope.launch {
-        delay(400)
+        delay(WAKE_REARM_DELAY_MS)
         wakeWordManager.setAudioSuppressed(false)
         if (!wakeWordManager.isRunning() && !voiceSession.isSessionActive()) {
           wakeWordManager.start()
@@ -664,6 +795,9 @@ class AssistantRepository private constructor(private val context: Context) {
     private const val TAG_TTS = "[D-VEX][TTS]"
     private const val TAG_VOICE = "[D-VEX][VOICE]"
     private const val TAG_ACTION = "[D-VEX][ACTION]"
+
+    /** Re-arm delay before passive wake-word listening restarts after a session ends. */
+    private const val WAKE_REARM_DELAY_MS = 400L
 
     @Volatile
     private var INSTANCE: AssistantRepository? = null

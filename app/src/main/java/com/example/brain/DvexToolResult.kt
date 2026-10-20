@@ -30,7 +30,13 @@ data class DvexToolResult(
   val confirmationPrompt: String? = null,
   val pendingActionId: String? = null,
   val multiStepExecutedFirst: Boolean = false,
-  val multiStepPendingSecond: DvexIntent? = null
+  val multiStepPendingSecond: DvexIntent? = null,
+  /**
+   * True when the agent could not pick a single target and is asking the user to
+   * clarify. The [message] carries the clarification; [spokenText] stays empty so no
+   * canned sentence is pre-authored by the agent layer.
+   */
+  val clarificationRequired: Boolean = false
 ) {
   val isSuccessful: Boolean get() = status == DvexToolStatus.SUCCESS
 }

@@ -6,6 +6,7 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
@@ -29,6 +30,29 @@ interface WakeWordDetector {
 }
 
 /**
+ * Optional capability a detector may implement so the settings layer can push a
+ * validated wake phrase, TTS echo-suppression, and the last spoken utterance down
+ * to the ACTIVE detector without the manager having to know its concrete class.
+ *
+ * Dispatch contract: [WakeWordManager] reaches these through `as? WakeWordCapability`.
+ * A detector that does NOT implement this interface simply cannot accept a live
+ * phrase change (updateKeyword returns false); it is never a crash.
+ */
+interface WakeWordCapability {
+  /**
+   * Applies a new wake phrase. @return true when the detector accepted and applied
+   * it; false when it rejected it (invalid phrase) or cannot reconfigure live.
+   */
+  fun setKeyword(keyword: String): Boolean
+
+  /** True while D-VEX is speaking, so the detector can suppress self-triggering. */
+  fun setAudioSuppressed(suppressed: Boolean)
+
+  /** Feeds the last spoken TTS text to the detector for acoustic-echo suppression. */
+  fun setRecentTtsUtterance(text: String)
+}
+
+/**
  * Standard Android-native wake-word detector using continuous SpeechRecognizer
  * checking for keywords like "D-VEX", "DVEX", "DEE VEX", or "Hey D-VEX".
  * Operates strictly locally on-device without streaming continuous audio to cloud.
@@ -36,7 +60,7 @@ interface WakeWordDetector {
 class AndroidSpeechWakeWordDetector(
   private val context: Context,
   private var keyword: String = "D-VEX"
-) : WakeWordDetector {
+) : WakeWordDetector, WakeWordCapability {
 
   override val name: String = "Android Speech Trigger Engine (Local)"
 
@@ -76,15 +100,16 @@ class AndroidSpeechWakeWordDetector(
     }
   }
 
-  fun setKeyword(newKeyword: String) {
-    this.keyword = newKeyword
+  override fun setKeyword(keyword: String): Boolean {
+    this.keyword = keyword
+    return true
   }
 
-  fun setAudioSuppressed(suppressed: Boolean) {
+  override fun setAudioSuppressed(suppressed: Boolean) {
     this.isAudioSuppressed = suppressed
   }
 
-  fun setRecentTtsUtterance(text: String) {
+  override fun setRecentTtsUtterance(text: String) {
     this.lastSpokenText = text.lowercase(Locale.ROOT).trim()
     this.lastSpokenTimestampMs = System.currentTimeMillis()
   }
@@ -396,13 +421,38 @@ class IdleRestartBackoff(
  */
 class WakeWordManager(
   private val context: Context,
-  private var detector: WakeWordDetector = AndroidSpeechWakeWordDetector(context)
+  private var detector: WakeWordDetector = SherpaOnnxWakeWordDetector(context),
+  // Wake-init observability knobs (rate-limit window + monotonic clock), injectable
+  // so the rate limiting itself is unit-testable. Defaults = production behaviour.
+  private val initLogWindowMs: Long = INIT_LOG_WINDOW_MS,
+  private val uptimeMs: () -> Long = { SystemClock.uptimeMillis() },
 ) {
 
   private val _state = MutableStateFlow<WakeWordState>(WakeWordState.Disabled)
   val state: StateFlow<WakeWordState> = _state.asStateFlow()
 
   private var onTriggerListener: ((String) -> Unit)? = null
+
+  // --- Wake-init observability (reason/state text only — never audio/transcripts).
+  /** Consecutive init failures since the engine last proved healthy (see [noteInitHealthy]). */
+  @Volatile private var initFailureStreak = 0
+
+  /** Re-arm attempts made from the Error state since the engine last proved healthy. */
+  @Volatile private var initRetryAttempts = 0
+
+  @Volatile private var lastInitFailureReason: String = ""
+  private var lastFailureLogAtMs: Long? = null
+  private var lastRetryLogAtMs: Long? = null
+
+  /**
+   * STALE-CALLBACK GUARD (Phase-10 regression): the offline detector posts its
+   * trigger/error from the capture thread to the main looper AFTER releasing the
+   * microphone, so stop()/enterStandby() can legally run before that queued
+   * callback executes. Every start() captures the CURRENT [generation]; a callback
+   * whose captured generation no longer matches was queued by a previous arm and is
+   * dropped before it can open a session or overwrite the state.
+   */
+  private var generation: Long = 0L
 
   /**
    * Hard trigger gate (voice-session lifecycle): when it returns false, wake-word
@@ -443,19 +493,26 @@ class WakeWordManager(
     Log.i(TAG, "Swapped wake-word detector to: ${newDetector.name}")
   }
 
-  fun updateKeyword(keyword: String) {
-    (detector as? AndroidSpeechWakeWordDetector)?.setKeyword(keyword)
+  /**
+   * Pushes a (validated) wake phrase to the active detector through the capability
+   * interface. @return true when the detector accepted it; false when the detector
+   * has no capability or rejected the phrase (the active phrase is unchanged).
+   */
+  fun updateKeyword(keyword: String): Boolean {
+    val capability = detector as? WakeWordCapability ?: return false
+    return capability.setKeyword(keyword)
   }
 
   fun setAudioSuppressed(suppressed: Boolean) {
-    (detector as? AndroidSpeechWakeWordDetector)?.setAudioSuppressed(suppressed)
+    (detector as? WakeWordCapability)?.setAudioSuppressed(suppressed)
   }
 
   fun setRecentTtsUtterance(text: String) {
-    (detector as? AndroidSpeechWakeWordDetector)?.setRecentTtsUtterance(text)
+    (detector as? WakeWordCapability)?.setRecentTtsUtterance(text)
   }
 
   fun enterStandby() {
+    generation++ // invalidate any trigger/error still queued from the previous arm
     if (detector.isRunning()) {
       detector.stop()
     }
@@ -466,14 +523,28 @@ class WakeWordManager(
   fun start() {
     if (!DvexPermissionManager.hasAudioPermission(context)) {
       _state.value = WakeWordState.Error("Microphone permission required for wake word.")
-      Log.w(TAG, "Cannot start wake word: microphone permission missing")
+      recordInitFailure("Microphone permission required for wake word.")
       return
+    }
+
+    // Genuine init failure was the previous outcome: log the retry attempt
+    // (rate-limited) so logcat shows the recovery chain failure -> retry -> delay.
+    if (_state.value is WakeWordState.Error) {
+      logInitRetryAttempt()
     }
 
     _state.value = WakeWordState.Listening
     Log.i(TAG, "Wake word listening started (local on-device engine)")
-    detector.start(
+    val armedGeneration = ++generation
+    try {
+      detector.start(
       onTrigger = { keyword ->
+        // STALE GUARD: a callback queued by a previous arm (before stop/standby)
+        // must never open a session or fire the pipeline.
+        if (armedGeneration != generation) {
+          Log.w(TAG, "Stale wake trigger dropped (previous generation)")
+          return@start
+        }
         // Session gate: while a wake/command voice session is active, any late or
         // duplicate detector callback is dropped here before reaching the pipeline.
         if (!shouldAcceptTrigger()) {
@@ -481,17 +552,77 @@ class WakeWordManager(
           return@start
         }
         _state.value = WakeWordState.Triggered(keyword)
+        noteInitHealthy() // a live detection proves the engine came up
         Log.i(TAG, "Wake word detected: \"$keyword\"")
         onTriggerListener?.invoke(keyword)
       },
       onError = { error ->
+        // STALE GUARD: an error queued by a previous arm must not resurface over
+        // Disabled/Standby.
+        if (armedGeneration != generation) {
+          Log.w(TAG, "Stale wake error dropped (previous generation)")
+          return@start
+        }
+        // Genuine init failure: the state must accurately reflect the failure.
+        // Later re-arms are unaffected — start() carries no precondition on Error,
+        // so a valid transition back to Listening/READY always remains possible.
         _state.value = WakeWordState.Error(error)
-        Log.w(TAG, "Wake word detector error: $error")
+        recordInitFailure(error)
       }
     )
+    } catch (t: Throwable) {
+      // SYNCHRONOUS INIT FAILURE: a detector that throws out of start() must leave
+      // an accurate failure state — never Listening-with-nothing-running, never a
+      // crash in the caller. (Stale-generation safety mirrors the async path.)
+      if (armedGeneration == generation) {
+        val reason = "Wake detector start() failed: ${t.message ?: t.javaClass.simpleName}"
+        recordInitFailure(reason)
+        _state.value = WakeWordState.Error(reason)
+      }
+    }
+    // Health probe: the production detector initialises synchronously inside
+    // start(); a running detector proves the engine came up, ending the streak.
+    if (detector.isRunning()) {
+      noteInitHealthy()
+    }
+  }
+
+  /**
+   * RATE-LIMITED init-failure log: the first failure in each window logs the
+   * attempt number and the failure reason; failures inside the window are only
+   * counted (attempt numbers jump across suppressed lines), so a crash-looping
+   * arm can never flood logcat. State/reason text only — never audio, never transcripts.
+   */
+  private fun recordInitFailure(reason: String) {
+    initFailureStreak++
+    lastInitFailureReason = reason
+    val now = uptimeMs()
+    val last = lastFailureLogAtMs
+    if (last == null || now - last >= initLogWindowMs) {
+      lastFailureLogAtMs = now
+      Log.w(TAG, "Wake init failed (attempt #$initFailureStreak): $reason")
+    }
+  }
+
+  /** Rate-limited retry-attempt log — the same window discipline as [recordInitFailure]. */
+  private fun logInitRetryAttempt() {
+    initRetryAttempts++
+    val now = uptimeMs()
+    val last = lastRetryLogAtMs
+    if (last == null || now - last >= initLogWindowMs) {
+      lastRetryLogAtMs = now
+      Log.i(TAG, "Wake init retry attempt #$initRetryAttempts (previous failure: $lastInitFailureReason)")
+    }
+  }
+
+  /** The engine proved healthy (running after start, or a live detection): restart the streaks. */
+  private fun noteInitHealthy() {
+    initFailureStreak = 0
+    initRetryAttempts = 0
   }
 
   fun stop() {
+    generation++ // invalidate any trigger/error still queued by the detector
     detector.stop()
     _state.value = WakeWordState.Disabled
     Log.i(TAG, "Wake word listening stopped")
@@ -510,5 +641,8 @@ class WakeWordManager(
 
   companion object {
     private const val TAG = "[D-VEX][WAKE]"
+
+    /** Minimum gap between identical wake-init observability log lines. */
+    private const val INIT_LOG_WINDOW_MS = 5_000L
   }
 }
