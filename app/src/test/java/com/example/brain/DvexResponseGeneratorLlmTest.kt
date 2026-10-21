@@ -440,4 +440,52 @@ class DvexResponseGeneratorLlmTest {
     assertTrue("bans understood-speak: $prompt", prompt.contains("\"Understood\""))
     assertTrue("bans certainly-speak: $prompt", prompt.contains("\"Certainly\""))
   }
+
+  /**
+   * REAL-DEVICE RESPONSE DIAGNOSIS: short natural inputs must reach Gemini with
+   * BOTH the raw utterance and the prior conversation context — the two things
+   * whose absence would make replies generic. (Whether the cloud call itself
+   * succeeds depends on the shared quota gate, pinned in DvexFreeFirstFallbackTest.)
+   */
+  @Test
+  fun conversationPromptCarriesConversationHistoryAndTheRawShortInput() {
+    val engine = FakeEngine(reply = "ok")
+    val gen = DvexResponseGenerator(engine)
+    val context = ConversationContext()
+    context.update(
+      input = "enna seiya pora?",
+      intent = DvexIntent.Conversation("enna seiya pora?"),
+      toolResult = successResult(toolName = "conversation", message = "", spokenText = ""),
+      language = DetectedLanguage.TANGLISH,
+      spokenResponse = "Something real.",
+    )
+
+    kotlinx.coroutines.runBlocking {
+      gen.generateResponse(
+        intent = DvexIntent.Conversation("enna panra"),
+        toolResult = successResult(toolName = "conversation", message = "", spokenText = ""),
+        language = DetectedLanguage.TANGLISH,
+        userInput = "enna panra",
+        context = context,
+      )
+    }
+
+    val prompt = engine.prompts.single()
+    assertTrue(
+      "the raw short input must reach the model verbatim: $prompt",
+      prompt.contains("THE USER JUST SAID: \"enna panra\"")
+    )
+    assertTrue(
+      "the conversation history section must exist: $prompt",
+      prompt.contains("CONVERSATION SO FAR")
+    )
+    assertTrue(
+      "the prior user turn must reach the model: $prompt",
+      prompt.contains("enna seiya pora?")
+    )
+    assertTrue(
+      "the previous reply must reach the model: $prompt",
+      prompt.contains("Something real.")
+    )
+  }
 }

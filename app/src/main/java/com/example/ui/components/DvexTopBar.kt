@@ -181,8 +181,12 @@ fun DvexTopBar(
               .alpha(pulseAlpha)
           )
           Spacer(modifier = Modifier.width(6.dp))
+          // HONEST STATUS: the header previously claimed a hardcoded "SYSTEM
+          // ONLINE" in every condition — including while wake-word detection was
+          // broken. It now renders the real derived assistant state label
+          // (AssistantViewModel maps the live assistant state into uiState.aiState).
           Text(
-            text = "SYSTEM ONLINE",
+            text = uiState.aiState.label,
             fontFamily = FontFamily.Monospace,
             fontSize = 9.sp,
             fontWeight = FontWeight.Bold,

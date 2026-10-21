@@ -7,6 +7,7 @@ import com.example.control.DeviceControlRepository
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -100,6 +101,36 @@ class DvexConversationRoutingTest {
     assertFalse(
       "the hardcoded honorific must be gone from the clarification path: $prompt",
       prompt.contains("Sir")
+    )
+  }
+
+  /**
+   * REAL-DEVICE RESPONSE DIAGNOSIS: a short natural Tanglish input ("enna panra")
+   * must route into the conversational LLM path — never the deterministic
+   * garble-clarification, never a canned reply. WHICH spoken line the user hears
+   * then depends on the shared cloud-quota gate (pinned separately in
+   * DvexFreeFirstFallbackTest); the routing itself is pinned here.
+   */
+  @Test
+  fun shortTanglishInputRoutesToTheLlmConversationPath() {
+    val detection = IntentDetector().detectIntent("enna panra", ConversationContext())
+
+    assertFalse(
+      "short natural Tanglish must not be treated as garbled speech: ${detection.intent}",
+      detection.intent is DvexIntent.LowConfidence,
+    )
+    assertTrue(
+      "expected a conversation/question intent reaching the LLM, got ${detection.intent}",
+      detection.intent is DvexIntent.Conversation || detection.intent is DvexIntent.GeneralQuestion,
+    )
+    assertTrue(
+      "the conversation fall-through confidence must still select the LLM route",
+      detection.confidence >= 0.70f,
+    )
+    assertNotEquals(
+      "a Tanglish input must not flip the reply language to English",
+      DetectedLanguage.ENGLISH,
+      detection.language,
     )
   }
 }
