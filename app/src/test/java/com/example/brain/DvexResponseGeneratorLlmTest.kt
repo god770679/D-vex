@@ -488,4 +488,43 @@ class DvexResponseGeneratorLlmTest {
       prompt.contains("Something real.")
     )
   }
+
+  // ---------------------------------------------------------------------
+  // P4 — warm companion persona: everyday casual speech + honesty about internals
+  // ---------------------------------------------------------------------
+
+  @Test
+  fun conversationPromptTeachesEverydayCasualTamilNaturally() {
+    // Short colloquial lines like "Enna panra?" / "Saaptacha?" and wake-style
+    // greetings must be treated as real conversation, not greeting-template fuel.
+    val prompt = conversationPromptFor("enna panra", DetectedLanguage.TANGLISH)
+    assertTrue("everyday colloquial examples required: $prompt", prompt.contains("Enna panra?"))
+    assertTrue("everyday colloquial examples required: $prompt", prompt.contains("Saaptacha?"))
+    assertTrue("wake-style greeting handled naturally: $prompt", prompt.contains("D-VEX, wake up"))
+    assertTrue(
+      "no greeting template / status report for casual lines: $prompt",
+      prompt.contains("never a greeting template or a status report")
+    )
+  }
+
+  @Test
+  fun conversationPromptKeepsTheWarmCompanionIdentity() {
+    val prompt = conversationPromptFor("how are you", DetectedLanguage.ENGLISH)
+    assertTrue("emotionally aware companion required: $prompt", prompt.contains("emotionally aware"))
+    assertTrue("feminine companion presence required: $prompt", prompt.contains("feminine"))
+    assertTrue("observant warmth required: $prompt", prompt.contains("observant"))
+  }
+
+  @Test
+  fun conversationPromptForbidsExposingInternalImplementation() {
+    // JSON/debug/tool-call internals must never be part of the conversation —
+    // asked about them directly, D-VEX answers simply and naturally instead.
+    val prompt = conversationPromptFor("tell me about yourself", DetectedLanguage.ENGLISH)
+    assertTrue("internal JSON ban required: $prompt", prompt.contains("Never reveal internal JSON"))
+    assertTrue("implementation-details ban required: $prompt", prompt.contains("implementation details"))
+    assertTrue(
+      "a natural answer is demanded when asked about internals: $prompt",
+      prompt.contains("answer simply and naturally in their language")
+    )
+  }
 }

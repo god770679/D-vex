@@ -53,11 +53,14 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
+import com.example.ai.GeminiKeyStore
 import com.example.model.DvexSettings
 import com.example.permissions.DvexPermissionManager
 import com.example.ui.theme.DvexBlack
@@ -391,6 +394,12 @@ fun AlwaysReadySettingsDialog(
 
         HorizontalDivider(color = DvexBorderMuted, thickness = 1.dp)
 
+        // Section 1c: AI connection — runtime Gemini key. Lets the user recover
+        // from a missing/exhausted build-time key directly on the phone.
+        GeminiKeySection(context = context)
+
+        HorizontalDivider(color = DvexBorderMuted, thickness = 1.dp)
+
         // Section 2: Permission Statuses & Direct Route Buttons
         val overallStatus = when {
           hasAudio && hasOverlay && hasNotif && hasBattery -> "READY"
@@ -665,6 +674,114 @@ private fun PermissionStatusRow(
         Text("GRANT", fontSize = 11.sp, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold)
       }
     }
+  }
+}
+
+/**
+ * AI CONNECTION — runtime Gemini API-key override.
+ *
+ * Security contract: the stored key value is NEVER displayed, logged, or put
+ * back into the text field; the UI only ever shows WHETHER a custom key is
+ * active (masked placeholder). Saved to app-private SharedPreferences via
+ * [GeminiKeyStore]; clearing falls back to the build-time embedded key.
+ */
+@Composable
+private fun GeminiKeySection(context: android.content.Context) {
+  var keyInput by remember { mutableStateOf("") }
+  // Bumped after save/clear so the custom-key status is recomputed immediately.
+  var statusTick by remember { mutableStateOf(0) }
+  val hasCustomKey = remember(statusTick) { GeminiKeyStore.hasRuntimeKey(context) }
+
+  Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+    Text(
+      text = "AI CONNECTION (GEMINI)",
+      fontFamily = FontFamily.Monospace,
+      fontWeight = FontWeight.Bold,
+      fontSize = 13.sp,
+      color = DvexTextPrimary
+    )
+    Text(
+      text = if (hasCustomKey) {
+        "STATUS: CUSTOM KEY ACTIVE — stored on this phone only."
+      } else {
+        "STATUS: BUILD KEY IN USE. If replies fall back to the offline voice, " +
+          "paste your own free Gemini API key below — it overrides the build key."
+      },
+      fontFamily = FontFamily.Monospace,
+      fontSize = 11.sp,
+      color = if (hasCustomKey) DvexSuccess else DvexTextMuted
+    )
+
+    OutlinedTextField(
+      value = keyInput,
+      onValueChange = { keyInput = it },
+      label = {
+        Text(
+          "GEMINI API KEY (OPTIONAL)",
+          fontFamily = FontFamily.Monospace,
+          fontSize = 10.sp,
+          color = DvexTextMuted
+        )
+      },
+      placeholder = {
+        Text(
+          if (hasCustomKey) "•••••••• custom key saved" else "paste key…",
+          fontFamily = FontFamily.Monospace,
+          fontSize = 11.sp,
+          color = DvexTextMuted
+        )
+      },
+      singleLine = true,
+      // Masked while typing; the saved value itself is never loaded back in.
+      visualTransformation = PasswordVisualTransformation(),
+      textStyle = TextStyle(
+        fontFamily = FontFamily.Monospace,
+        fontSize = 12.sp,
+        color = DvexNeonRedBright
+      ),
+      colors = OutlinedTextFieldDefaults.colors(
+        focusedBorderColor = DvexNeonRedBright,
+        unfocusedBorderColor = DvexBorderMuted,
+        focusedContainerColor = DvexSurfaceDark,
+        unfocusedContainerColor = DvexSurfaceDark
+      ),
+      modifier = Modifier.fillMaxWidth()
+    )
+
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+      OutlinedButton(
+        onClick = {
+          GeminiKeyStore.setRuntimeKey(context, keyInput)
+          keyInput = ""
+          statusTick++
+        },
+        enabled = keyInput.isNotBlank(),
+        shape = CutCornerShape(2.dp),
+        colors = ButtonDefaults.outlinedButtonColors(contentColor = DvexNeonRedBright)
+      ) {
+        Text("SAVE KEY", fontSize = 11.sp, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold)
+      }
+      if (hasCustomKey) {
+        OutlinedButton(
+          onClick = {
+            GeminiKeyStore.setRuntimeKey(context, null)
+            keyInput = ""
+            statusTick++
+          },
+          shape = CutCornerShape(2.dp),
+          colors = ButtonDefaults.outlinedButtonColors(contentColor = DvexWarning)
+        ) {
+          Text("CLEAR", fontSize = 11.sp, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold)
+        }
+      }
+    }
+
+    Text(
+      text = "Saved in app-private storage. Never logged, never uploaded.",
+      fontFamily = FontFamily.Monospace,
+      fontSize = 10.sp,
+      color = DvexTextMuted
+    )
   }
 }
 

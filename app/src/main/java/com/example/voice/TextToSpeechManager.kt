@@ -28,6 +28,13 @@ import java.util.UUID
  * INTERRUPTION (barge-in) is unchanged: every new reply, wake trigger or explicit stop
  * calls [stop], which cancels the whole chunk queue at once. No audio focus is requested, no
  * stream volume is touched, and no second audio source is introduced — one engine, one queue.
+ *
+ * SPEED: the configured 1.2x target ([SpeechRatePolicy.TARGET_SPEECH_RATE]) is
+ * REQUESTED from the engine and then VERIFIED via `setSpeechRate()`'s status code
+ * — the only acceptance signal the public Android TTS API exposes (there is no
+ * `getSpeechRate()` getter). The outcome is always logged under [TAG], so D-VEX
+ * never claims 1.2x delivery the engine did not accept, and a rejected rate falls
+ * back to the engine's own default rather than failing the utterance.
  */
 class TextToSpeechManager(private val context: Context) {
 
@@ -57,9 +64,19 @@ class TextToSpeechManager(private val context: Context) {
 
   // Baseline prosody for the currently selected voice/language. Tone adaptation
   // adjusts these rather than replacing them, so the language-specific voice
-  // character set by setupVoiceAndLanguage() is preserved.
-  private var baseSpeechRate = 0.96f
+  // character set by setupVoiceAndLanguage() is preserved. The base RATE starts
+  // at the configured D-VEX target (1.2x) and is corrected to whatever the engine
+  // VERIFIABLY accepted (see applyBaseSpeechRate).
+  private var baseSpeechRate = SpeechRatePolicy.TARGET_SPEECH_RATE
   private var basePitch = 1.0f
+
+  /**
+   * Diagnostic mirror of the LAST rate verification outcome (see
+   * [SpeechRatePolicy]); null until the first request. Never used to claim a
+   * speed the engine did not accept.
+   */
+  @Volatile
+  private var lastRateVerification: SpeechRatePolicy.Verification? = null
 
   init {
     initTts()
@@ -213,26 +230,24 @@ class TextToSpeechManager(private val context: Context) {
         if (langSupported) {
           // Calmer, measured intonation for Tamil:
           // Pitch: 0.98f (natural, warm pitch; prevents sharp robotic tone)
-          // Speech rate: 0.93f (deliberate cadence allowing full phonetic articulation)
+          // Speech rate: the configured 1.2x D-VEX target, engine-verified.
           basePitch = 0.98f
-          baseSpeechRate = 0.93f
           engine.setPitch(basePitch)
-          engine.setSpeechRate(baseSpeechRate)
+          applyBaseSpeechRate(engine, SpeechRatePolicy.TARGET_SPEECH_RATE)
 
           val bestTamilVoice = selectBestTamilVoice(engine)
           if (bestTamilVoice != null) {
             engine.voice = bestTamilVoice
             Log.i(TAG, "Selected natural Tamil voice: ${bestTamilVoice.name}")
           } else {
-            Log.i(TAG, "Using engine default Tamil voice with optimized pitch (0.98) and speech rate (0.93)")
+            Log.i(TAG, "Using engine default Tamil voice with optimized pitch (0.98) and the verified 1.2x speech rate")
           }
         } else {
           Log.w(TAG, "Tamil locale not fully supported by active TTS engine; using Indian English fallback")
           engine.setLanguage(Locale.forLanguageTag("en-IN"))
           basePitch = 1.0f
-          baseSpeechRate = 0.95f
           engine.setPitch(basePitch)
-          engine.setSpeechRate(baseSpeechRate)
+          applyBaseSpeechRate(engine, SpeechRatePolicy.TARGET_SPEECH_RATE)
           val bestVoice = selectBestVoice(engine, Locale.forLanguageTag("en-IN"))
           if (bestVoice != null) {
             engine.voice = bestVoice
@@ -245,11 +260,11 @@ class TextToSpeechManager(private val context: Context) {
           engine.setLanguage(Locale.US)
         }
 
-        // Calmer, pleasant, conversational pace for English
+        // Calmer, pleasant, conversational pace for English at the configured
+        // 1.2x D-VEX target (engine-verified, see applyBaseSpeechRate).
         basePitch = 1.0f
-        baseSpeechRate = 0.96f
         engine.setPitch(basePitch)
-        engine.setSpeechRate(baseSpeechRate)
+        applyBaseSpeechRate(engine, SpeechRatePolicy.TARGET_SPEECH_RATE)
 
         val bestVoice = selectBestVoice(engine, targetLocale)
         if (bestVoice != null) {
@@ -356,6 +371,31 @@ class TextToSpeechManager(private val context: Context) {
       }
       score
     }
+  }
+
+  /**
+   * Requests the configured D-VEX speech speed and VERIFIES the engine's own
+   * acceptance of it via `setSpeechRate()`'s status code — the only acceptance
+   * signal the public Android TTS API exposes (no `getSpeechRate()` getter
+   * exists). The outcome is logged; on acceptance the requested rate becomes the
+   * baseline tone adapts from. Verification never fails the utterance: a
+   * rejected rate leaves the engine's own default in place.
+   */
+  private fun applyBaseSpeechRate(engine: TextToSpeech, requested: Float): Float {
+    val status = try {
+      engine.setSpeechRate(requested)
+    } catch (t: Throwable) {
+      -1
+    }
+    val verification = SpeechRatePolicy.verify(requested, status)
+    lastRateVerification = verification
+    if (verification.callAccepted) {
+      baseSpeechRate = requested
+      Log.i(TAG, "Speech rate verified: engine ACCEPTED $requested (status=$status)")
+    } else {
+      Log.w(TAG, "Engine REJECTED setSpeechRate($requested) (status=$status); keeping engine default rate")
+    }
+    return if (verification.callAccepted) requested else baseSpeechRate
   }
 
   /**
@@ -468,8 +508,16 @@ class TextToSpeechManager(private val context: Context) {
     try {
       val rate = clamp(baseSpeechRate * rateFactor, RATE_MIN, RATE_MAX)
       val pitch = clamp(basePitch + pitchOffset, PITCH_MIN, PITCH_MAX)
-      engine.setSpeechRate(rate)
+      val rateStatus = engine.setSpeechRate(rate)
       engine.setPitch(pitch)
+      // Verify the tone-adjusted rate too — the engine's status is the only
+      // acceptance signal. Read-back only, no retry: tone must never fail the
+      // utterance.
+      val toneVerification = SpeechRatePolicy.verify(rate, rateStatus)
+      lastRateVerification = toneVerification
+      if (!toneVerification.callAccepted) {
+        Log.w(TAG, "Tone rate $rate not accepted by engine (status=$rateStatus)")
+      }
       Log.i(
         TAG,
         "Tone prosody: tone=${toneCode ?: "NEUTRAL"} " +
@@ -595,8 +643,10 @@ class TextToSpeechManager(private val context: Context) {
     private val WHITESPACE_RUN = Regex("\\s+")
 
     // Bounded so tone adaptation can never produce an unnatural or unintelligible voice.
+    // The upper bound sits above the verified 1.2x base so every tone factor fits:
+    // 1.2 * 1.07 (max, EXCITED) = 1.284 < 1.35.
     private const val RATE_MIN = 0.80f
-    private const val RATE_MAX = 1.15f
+    private const val RATE_MAX = 1.35f
     private const val PITCH_MIN = 0.90f
     private const val PITCH_MAX = 1.10f
   }
