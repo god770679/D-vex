@@ -14,6 +14,7 @@ import com.example.agent.DvexToolProtocol
 import com.example.ai.AiEngine
 import com.example.ai.AiQuotaState
 import com.example.ai.GeminiEngine
+import com.example.ai.GeminiKeyStore
 import com.example.control.AppLauncherRepository
 import com.example.control.ContactResolver
 import com.example.control.DeviceControlRepository
@@ -86,14 +87,19 @@ class DvexSmartBrain(
   private val effectiveAiEngine: AiEngine? =
     aiEngine ?: GeminiEngine(
       apiKeyProvider = {
-        try {
-          com.example.BuildConfig.GEMINI_API_KEY.takeIf { it.isNotBlank() }
-        } catch (e: Exception) {
-          null
-        }
+        // RUNTIME KEY FIRST: the user can paste their own Gemini key in Settings
+        // when the embedded CI key's free quota is spent, so a shared exhausted
+        // key no longer pins every install on the local fallback. The value is
+        // never logged here; GeminiEngine redacts it from any error text.
+        GeminiKeyStore.resolve(context)
       },
       quotaState = quotaState
-    )
+    ).also {
+      // A newly entered key must be usable IMMEDIATELY: without this, a quota
+      // cooldown recorded against the OLD key would keep D-VEX answering from the
+      // local fallback for up to an hour after the user pasted a fresh key.
+      GeminiKeyStore.addOnKeyChangedListener { quotaState.reset() }
+    }
   /**
    * Agent layer: action-oriented planning + capability-checked execution. It owns
    * device/app/multi-step intents and delegates each action to the EXISTING
